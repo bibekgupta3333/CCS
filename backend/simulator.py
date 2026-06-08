@@ -1,16 +1,10 @@
 import asyncio
 import math
-import random
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass
+from datetime import date
 from typing import AsyncIterator, Dict, Optional
 
 import numpy as np
-import pandas as pd
-
-DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "ccs"
-INJECTION_CSV = DATA_DIR / "ccs_injection_daily_v1.0.csv"
-PRESETS_CSV = DATA_DIR / "ccs_full_dataset_v1.0.csv"
 
 RESERVOIR_PROPERTIES = {
     "Basalt":            {"porosity": 0.12, "thickness_m": 55, "swi": 0.25, "k_inj": 2.2e-5, "k_diss": 0.005},
@@ -20,7 +14,6 @@ RESERVOIR_PROPERTIES = {
 
 
 def _co2_density(pressure_mpa: float) -> float:
-    """Approximate supercritical CO2 density (kg/m3) at reservoir conditions."""
     if pressure_mpa < 7.4:
         return max(50, 50 + 20 * pressure_mpa)
     rho = 200 + 35 * (pressure_mpa - 7.4)
@@ -58,60 +51,66 @@ class SimulationState:
 
 
 class CCSSimulator:
-    """CO2 injection reservoir simulator.
-
-    Models pressure buildup, plume migration, and stochastic leakage
-    on a day-by-day timestep, driven by a real SCCS-MRV injection schedule.
-    """
+    """CO2 injection reservoir simulator — driven by SCCS-MRV data from Postgres."""
 
     def __init__(self) -> None:
-        self._injection_df: Optional[pd.DataFrame] = None
-        self._presets_df: Optional[pd.DataFrame] = None
         self._rng: Optional[np.random.Generator] = None
 
-    # ------------------------------------------------------------------
-    # data loading
-    # ------------------------------------------------------------------
-
-    def load_data(self) -> None:
-        self._injection_df = pd.read_csv(INJECTION_CSV, parse_dates=["date"])
-        self._presets_df = pd.read_csv(PRESETS_CSV)
-
-    def _ensure_loaded(self) -> None:
-        if self._injection_df is None or self._presets_df is None:
-            self.load_data()
+        self._facility_presets: dict[str, dict] = {}
+        self._injection_schedules: dict[str, list[dict]] = {}
+        self._case_ids: list[str] = []
 
     # ------------------------------------------------------------------
-    # helpers
+    # async data loading from Postgres
+    # ------------------------------------------------------------------
+
+    async def load_from_db(self, db) -> None:
+        from backend.database import get_preset, get_schedule_rows, get_available_cases
+
+        self._case_ids = await get_available_cases()
+        self._facility_presets = {}
+        self._injection_schedules = {}
+
+        for case_id in self._case_ids:
+            row = await get_preset(case_id)
+            self._facility_presets[case_id] = self._build_preset(row)
+
+            rows = await get_schedule_rows(case_id)
+            self._injection_schedules[case_id] = rows
+
+    @staticmethod
+    def _build_preset(row: dict) -> dict:
+        return {
+            "case_id": row["case_id"],
+            "reservoir_type": row["reservoir_type"],
+            "p_init_MPa": float(row.get("avg_reservoir_pressure_mpa", row.get("avg_reservoir_pressure_MPa", 0))),
+            "temp_C": float(row.get("avg_reservoir_temp_c", row.get("avg_reservoir_temp_C", 0))),
+            "total_injected_tonnes": float(row.get("co2_injected_tonnes", 0)),
+            "lat": float(row.get("lat", 0)),
+            "lon": float(row.get("lon", 0)),
+            "capture_tech": row.get("capture_tech", ""),
+            "transport_mode": row.get("transport_mode", ""),
+        }
+
+    # ------------------------------------------------------------------
+    # public accessors (used by API layer)
     # ------------------------------------------------------------------
 
     @property
     def available_cases(self) -> list[str]:
-        self._ensure_loaded()
-        return sorted(self._injection_df["case_id"].unique().tolist())
+        return list(self._case_ids)
 
-    def get_schedule(self, case_id: str) -> pd.DataFrame:
-        self._ensure_loaded()
-        mask = self._injection_df["case_id"] == case_id
-        return self._injection_df.loc[mask].sort_values("date").reset_index(drop=True)
-
-    def get_preset(self, case_id: str) -> Dict:
-        self._ensure_loaded()
-        row = self._presets_df[self._presets_df["case_id"] == case_id]
-        if row.empty:
+    def get_preset(self, case_id: str) -> dict:
+        p = self._facility_presets.get(case_id)
+        if p is None:
             raise ValueError(f"Unknown case_id: {case_id}")
-        r = row.iloc[0]
-        return {
-            "case_id": r["case_id"],
-            "reservoir_type": r["reservoir_type"],
-            "p_init_MPa": float(r["avg_reservoir_pressure_MPa"]),
-            "temp_C": float(r["avg_reservoir_temp_C"]),
-            "total_injected_tonnes": float(r["co2_injected_tonnes"]),
-            "lat": float(r["lat"]),
-            "lon": float(r["lon"]),
-            "capture_tech": r["capture_tech"],
-            "transport_mode": r["transport_mode"],
-        }
+        return p
+
+    def get_schedule(self, case_id: str) -> list[dict]:
+        sched = self._injection_schedules.get(case_id)
+        if sched is None:
+            raise ValueError(f"Unknown case_id: {case_id}")
+        return sched
 
     # ------------------------------------------------------------------
     # reservoir physics
@@ -119,17 +118,10 @@ class CCSSimulator:
 
     def _reservoir_params(self, reservoir_type: str) -> Dict:
         base = RESERVOIR_PROPERTIES.get(reservoir_type, RESERVOIR_PROPERTIES["Basalt"])
-        return {
-            "porosity": base["porosity"],
-            "thickness_m": base["thickness_m"],
-            "swi": base["swi"],
-            "k_inj": base["k_inj"],
-            "k_diss": base["k_diss"],
-        }
+        return dict(base)
 
     def _pressure(self, p_init: float, v_cum: float, day: int,
                   k_inj: float, k_diss: float) -> tuple[float, float]:
-        """Pressure model: P(t) = P_init + k_inj * V_cum - dissipation(t)"""
         buildup = k_inj * v_cum
         dissipation = k_diss * math.sqrt(max(day - 1, 0)) * buildup
         raw = p_init + buildup - dissipation
@@ -137,7 +129,6 @@ class CCSSimulator:
 
     def _plume_radius(self, v_cum_tonnes: float, pressure_mpa: float,
                       porosity: float, thickness_m: float, swi: float) -> float:
-        """Nordbotten-Celio style analytical plume radius."""
         if v_cum_tonnes <= 0:
             return 0.0
         rho_co2 = _co2_density(pressure_mpa)
@@ -163,12 +154,9 @@ class CCSSimulator:
     # ------------------------------------------------------------------
 
     def run_sync(self, config: SimulatorConfig) -> list[Dict]:
-        """Run simulation synchronously, return full trace."""
         return list(self.run(config))
 
     def run(self, config: SimulatorConfig):
-        """Generator yielding one SimulationState dict per timestep."""
-        self._ensure_loaded()
         self._rng = np.random.default_rng(config.random_seed)
 
         schedule = self.get_schedule(config.case_id)
@@ -194,8 +182,8 @@ class CCSSimulator:
 
         for day_idx in range(sim_days):
             day = day_idx + 1
-            row = schedule.iloc[day_idx]
-            injected_tonnes = row["co2_injected_tonnes"] * config.injection_rate_multiplier
+            row = schedule[day_idx]
+            injected_tonnes = float(row["co2_injected_tonnes"]) * config.injection_rate_multiplier
             injected_tonnes = max(0.0, injected_tonnes)
 
             cumulative_tonnes += injected_tonnes
@@ -205,7 +193,6 @@ class CCSSimulator:
             )
 
             raw_pressure = pressure_mpa
-
             rho_co2 = _co2_density(pressure_mpa)
 
             leak_kg = 0.0
@@ -252,7 +239,6 @@ class CCSSimulator:
             }
 
     async def run_async(self, config: SimulatorConfig) -> AsyncIterator[Dict]:
-        """Async generator that yields with configurable delay between steps."""
         for state in self.run(config):
             yield state
             delay = 0.1 / max(config.speed_multiplier, 0.1)
@@ -264,7 +250,6 @@ class CCSSimulator:
 
     @staticmethod
     def summarize(trace: list[Dict]) -> Dict:
-        """Produce a summary from a completed simulation trace."""
         if not trace:
             return {}
         final = trace[-1]

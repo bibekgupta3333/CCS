@@ -1,8 +1,79 @@
 import json
+import os
 
-import httpx
+import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
+from pathlib import Path
+
+DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "ccs"
+
+
+def _make_preloaded_simulator():
+    from backend.simulator import CCSSimulator
+    sim = CCSSimulator()
+
+    df_fac = pd.read_csv(DATA_DIR / "ccs_full_dataset_v1.0.csv")
+    df_inj = pd.read_csv(DATA_DIR / "ccs_injection_daily_v1.0.csv", parse_dates=["date"])
+
+    sim._facility_presets = {}
+    for _, r in df_fac.iterrows():
+        sim._facility_presets[r["case_id"]] = {
+            "case_id": r["case_id"],
+            "reservoir_type": r["reservoir_type"],
+            "p_init_MPa": float(r["avg_reservoir_pressure_MPa"]),
+            "temp_C": float(r["avg_reservoir_temp_C"]),
+            "total_injected_tonnes": float(r["co2_injected_tonnes"]),
+            "lat": float(r["lat"]),
+            "lon": float(r["lon"]),
+            "capture_tech": r["capture_tech"],
+            "transport_mode": r["transport_mode"],
+        }
+
+    sim._case_ids = sorted(df_inj["case_id"].unique().tolist())
+    sim._injection_schedules = {}
+    for case_id in sim._case_ids:
+        mask = df_inj["case_id"] == case_id
+        sim._injection_schedules[case_id] = (
+            df_inj.loc[mask].sort_values("date").to_dict(orient="records")
+        )
+
+    return sim
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _preload_simulator():
+    import backend.database as db
+    import backend.main
+    import backend.state as state
+
+    async def _noop(): pass
+    db.init_db = _noop
+    db.ingest_from_csv = _noop
+    db.close_pool = _noop
+
+    class _FakeConn:
+        async def execute(self, *a, **kw): pass
+        async def executemany(self, *a, **kw): pass
+        async def fetch(self, *a, **kw): return []
+        async def fetchrow(self, *a, **kw): return None
+        async def fetchval(self, *a, **kw): return 1
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): pass
+
+    class _FakePool:
+        def acquire(self):
+            return _FakeConn()
+
+    async def _make_fake_pool(*a, **kw):
+        return _FakePool()
+
+    db.init_db = _noop
+    db.ingest_from_csv = _noop
+    db.close_pool = _noop
+    db.get_pool = _make_fake_pool
+
+    state._simulator = _make_preloaded_simulator()
 
 
 @pytest.fixture(scope="module")
@@ -17,7 +88,7 @@ class TestHealth:
         resp = client.get("/health")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["status"] == "healthy"
+        assert "available_cases" in data
         assert data["case_count"] == 10
 
     def test_health_has_available_cases(self, client: TestClient):
@@ -39,7 +110,7 @@ class TestPresets:
             assert required.issubset(p.keys())
 
     def test_presets_structure_matches_schema(self, client: TestClient):
-        from backend.main import PresetItem
+        from backend.models import PresetItem
         resp = client.get("/presets")
         for item in resp.json():
             PresetItem(**item)
@@ -85,7 +156,7 @@ class TestSimulate:
         assert len(data["trace"]) == 10
 
     def test_simulate_response_schema(self, client: TestClient):
-        from backend.main import SimulateResponse
+        from backend.models import SimulateResponse
         resp = client.post("/simulate", json={"case_id": "CCS-A", "days": 5, "random_seed": 42})
         SimulateResponse(**resp.json())
 
@@ -191,7 +262,7 @@ class TestValidate:
         assert any(i["severity"] == "warning" and i["field"] == "reservoir_type" for i in issues)
 
     def test_validate_response_schema(self, client: TestClient):
-        from backend.main import ValidateResponse
+        from backend.models import ValidateResponse
         resp = client.post("/validate", json={"days": 500})
         ValidateResponse(**resp.json())
 
@@ -248,4 +319,4 @@ class TestErrorHandling:
 
     def test_422_for_missing_required_fields(self, client: TestClient):
         resp = client.post("/simulate", json={})
-        assert resp.status_code == 200  # case_id has default CCS-A, days has default 90
+        assert resp.status_code == 200

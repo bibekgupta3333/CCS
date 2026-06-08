@@ -29,6 +29,8 @@ htmlcov/
 
 # Python env
 .env
+.env.sandbox
+.env.production
 *.env.local
 
 # Jupyter
@@ -37,3 +39,6 @@ htmlcov/
 # Logs
 *.log
 /tmp/
+
+# Docker
+pgdata/

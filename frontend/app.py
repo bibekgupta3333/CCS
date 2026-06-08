@@ -2,6 +2,7 @@ import asyncio
 import base64
 import io
 import json
+import os
 import queue
 import threading
 from datetime import datetime, timezone
@@ -14,8 +15,8 @@ import requests
 import websockets
 from dash import Input, Output, State, callback, ctx, dcc, html, no_update
 
-BACKEND = "http://localhost:8000"
-WS_URL = "ws://localhost:8000"
+BACKEND = os.getenv("BACKEND_URL", "http://localhost:8000")
+WS_URL = BACKEND.replace("http://", "ws://").replace("https://", "wss://")
 
 PRESSURE_SAFE = 1.15
 PRESSURE_WARN = 1.30
