@@ -1,0 +1,16 @@
+# Default values for frontend subchart.
+
+image:
+  repository: ccs-frontend
+  tag: latest
+  pullPolicy: IfNotPresent
+
+replicas: 1
+
+resources:
+  requests:
+    cpu: 256m
+    memory: 512Mi
+  limits:
+    cpu: 512m
+    memory: 1Gi

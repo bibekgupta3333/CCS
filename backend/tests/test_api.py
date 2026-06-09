@@ -85,15 +85,26 @@ def client():
 
 class TestHealth:
     def test_health_returns_200(self, client: TestClient):
+        """Liveness: process alive, no DB check."""
         resp = client.get("/health")
         assert resp.status_code == 200
-        data = resp.json()
-        assert "available_cases" in data
-        assert data["case_count"] == 10
+        assert resp.json() == {"status": "ok"}
 
-    def test_health_has_available_cases(self, client: TestClient):
-        resp = client.get("/health")
-        assert resp.json()["available_cases"] == [f"CCS-{c}" for c in "ABCDEFGHIJ"]
+    def test_ready_checks_db(self, client: TestClient):
+        """Readiness: DB pool connectivity (no DB in test env → not_ready)."""
+        resp = client.get("/ready")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "not_ready"
+        assert data["db"] == "disconnected"
+
+    def test_startup_checks_schema(self, client: TestClient):
+        """Startup: DB schema check (no DB in test env → starting)."""
+        resp = client.get("/startup")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "starting"
+        assert data["schema"] is False
 
 
 class TestPresets:

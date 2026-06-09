@@ -1,0 +1,21 @@
+# Default values for backend subchart.
+# These are overridden by umbrella values.yaml via `backend.*`.
+
+image:
+  repository: ccs-backend
+  tag: latest
+  pullPolicy: IfNotPresent
+
+replicas: 1
+
+resources:
+  requests:
+    cpu: 256m
+    memory: 512Mi
+  limits:
+    cpu: 512m
+    memory: 1Gi
+
+logLevel: INFO
+
+databaseUrl: "postgresql://ccs:ccs_password@ccs-postgresql:5432/ccs_db"

@@ -1,0 +1,100 @@
+# ============================================================
+# CCS Umbrella Chart — dev values (minikube)
+# ============================================================
+
+# --- Backend subchart ---
+backend:
+  image:
+    repository: ccs-backend
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicas: 1
+  resources:
+    requests:
+      cpu: 256m
+      memory: 512Mi
+    limits:
+      cpu: 512m
+      memory: 1Gi
+  logLevel: INFO
+  # Database URL — must match postgresql.auth below
+  # The hostname {{ .Release.Name }}-postgresql matches postgresql.fullnameOverride
+  databaseUrl: "postgresql://ccs:ccs_password@ccs-postgresql:5432/ccs_db"
+
+# --- Frontend subchart ---
+frontend:
+  image:
+    repository: ccs-frontend
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicas: 1
+  resources:
+    requests:
+      cpu: 256m
+      memory: 512Mi
+    limits:
+      cpu: 512m
+      memory: 1Gi
+
+# --- Ingress ---
+ingress:
+  enabled: true
+  hosts:
+    api: api.ccs.local
+    app: app.ccs.local
+
+# --- PostgreSQL (Bitnami subchart) ---
+postgresql:
+  enabled: true
+  fullnameOverride: ccs-postgresql
+  auth:
+    username: ccs
+    password: ccs_password
+    database: ccs_db
+  volumePermissions:
+    enabled: true
+  primary:
+    persistence:
+      size: 5Gi
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+    podSecurityContext:
+      fsGroup: 1001
+      fsGroupChangePolicy: Always
+    containerSecurityContext:
+      runAsUser: 1001
+      runAsGroup: 1001
+    affinity:
+      nodeAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+                - key: node-role.kubernetes.io/control-plane
+                  operator: DoesNotExist
+
+# --- Ingress-Nginx controller ---
+ingress-nginx:
+  enabled: true
+  controller:
+    service:
+      type: LoadBalancer  # minikube tunnel → 127.0.0.1:80
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+
+# --- Optional (disabled for dev) ---
+redis:
+  enabled: false
+
+monitoring:
+  enabled: false

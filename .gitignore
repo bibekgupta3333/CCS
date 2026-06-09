@@ -28,7 +28,7 @@ Thumbs.db
 htmlcov/
 
 # Python env
-.env
+
 .env.sandbox
 .env.production
 *.env.local

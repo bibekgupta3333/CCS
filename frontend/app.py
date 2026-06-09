@@ -191,6 +191,11 @@ def _help(text: str) -> html.Div:
 app = dash.Dash(__name__, suppress_callback_exceptions=True)
 app.title = "CCS Realtime Injection Simulator"
 
+
+@app.server.route("/health")
+def frontend_health():
+    return {"status": "ok"}
+
 app.layout = html.Div(
     style=dict(
         display="flex", height="100vh", background=COLOR_BG,
