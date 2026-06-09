@@ -18,6 +18,7 @@
     "k8s:helm-dep": "make helm-dep",
     "k8s:helm-lint": "make helm-lint",
     "k8s:helm-deploy": "make helm-deploy",
-    "k8s:helm-delete": "make helm-delete"
+    "k8s:helm-delete": "make helm-delete",
+    "k8s:add-node": "make minikube-add-node"
   }
 }

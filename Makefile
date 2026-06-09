@@ -73,6 +73,8 @@ k8s-reset: k8s-clean
 k8s-setup:
 	./k8s/setup.sh all
 
+all: k8s-setup
+
 # ============================================================
 # Docker images (build locally, load into minikube nodes)
 # ============================================================
@@ -105,8 +107,11 @@ helm-delete:
 
 k8s-deploy: helm-dep helm-deploy
 
+minikube-add-node:
+	./k8s/setup.sh nodes
+
 .PHONY: dev sandbox prod stop down logs ps test \
 	minikube-start minikube-tunnel minikube-delete \
-	k8s-clean k8s-reset k8s-setup \
+	k8s-clean k8s-reset k8s-setup all minikube-add-node \
 	docker-build-backend docker-build-frontend docker-build-all \
 	helm-dep helm-lint helm-deploy helm-delete k8s-deploy

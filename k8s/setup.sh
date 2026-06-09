@@ -65,19 +65,25 @@ start_cluster() {
   log "Checking cluster..."
 
   # Check if any node is Running
+  # Note: minikube exits 85 when profile doesn't exist, so || true is needed
   STATUS=$(minikube status -p "$CLUSTER" -o json 2>/dev/null | python3 -c '
 import json,sys
 try:
-    nodes=json.load(sys.stdin)
-    if not nodes:
+    raw = json.load(sys.stdin)
+    # CloudEvents format — profile not found
+    if isinstance(raw, dict) and "data" in raw:
         print("NotFound")
-    elif any(n.get("Host")=="Running" for n in nodes):
-        print("Running")
+    # Normal format: list of nodes
+    elif isinstance(raw, list):
+        print("Running" if any(n.get("Host")=="Running" for n in raw) else "Stopped")
+    # Single dict e.g. {Host: Running}
+    elif isinstance(raw, dict):
+        print("Running" if raw.get("Host")=="Running" else "Stopped")
     else:
-        print("Stopped")
-except:
+        print("NotFound")
+except Exception:
     print("NotFound")
-' 2>/dev/null)
+' 2>/dev/null) || true
 
   case "$STATUS" in
     Running)
@@ -101,32 +107,41 @@ except:
 }
 
 # ─────────────────────────────────────────────────────
-# Worker node + CNI
+# Worker node + CNI (optional — single-node is default for dev)
 # ─────────────────────────────────────────────────────
 setup_nodes() {
-  log "Checking nodes..."
+  local force="${1:-}"
+
+  # Warn about Docker Desktop limitation
+  if docker info 2>/dev/null | grep -q "docker-desktop"; then
+    warn "Docker Desktop driver detected. Multi-node on macOS Docker Desktop is BROKEN:"
+    warn "  - LinuxKit VM blocks /proc/sys/net/ipv4/conf/*/rp_filter writes"
+    warn "  - VXLAN (Flannel default backend) does not work"
+    warn "  - Cross-node pod networking (DNS, pod-to-pod) will FAIL"
+    if [ -z "$force" ]; then
+      warn "Skipping multi-node setup. Use --force to override."
+      echo ""
+      return 0
+    fi
+    warn "Proceeding anyway (--force) — expect networking issues."
+  fi
 
   NODE_COUNT=$(kubectl get nodes -o name 2>/dev/null | wc -l | tr -d ' ')
-  log "  node count: ${NODE_COUNT}"
-
   if [ "$NODE_COUNT" -lt 2 ]; then
     log "  adding worker node..."
     minikube node add -p "$CLUSTER"
-    log "  waiting for worker node to be ready..."
-    sleep 10
+    log "  waiting for node to register..."
+    sleep 15
+  else
+    log "  worker node already exists"
   fi
 
-  # Install Flannel CNI (idempotent — kubectl apply is a no-op if already running)
-  log "  ensuring Flannel CNI..."
+  log "  installing Flannel CNI..."
   kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml >/dev/null
-  log "  waiting for Flannel pods..."
   kubectl wait --for=condition=ready pod -l app=flannel -n kube-flannel --timeout=120s 2>/dev/null || true
-
-  # Wait for all nodes Ready
   kubectl wait --for=condition=ready node --all --timeout=60s 2>/dev/null || true
 
   log "Nodes: OK"
-  kubectl get nodes
   echo ""
 }
 
@@ -187,10 +202,13 @@ start_tunnel() {
   if pgrep -f "minikube tunnel.*${CLUSTER}" &>/dev/null; then
     log "  tunnel already running (PID: $(pgrep -f 'minikube tunnel.*local-ccs-cluster' | head -1))"
   else
-    log "  starting tunnel in background..."
+    warn "  Starting tunnel in background (will NOT be able to bind privileged ports 80/443)."
+    warn "  For ingress access, run in a separate terminal:"
+    warn "    minikube tunnel -p ${CLUSTER}"
+    warn "  (will prompt for sudo to bind port 80)"
     nohup minikube tunnel -p "$CLUSTER" > /tmp/minikube-tunnel.log 2>&1 &
     echo $! > /tmp/minikube-tunnel.pid
-    log "  tunnel PID: $(cat /tmp/minikube-tunnel.pid)"
+    log "  background tunnel PID: $(cat /tmp/minikube-tunnel.pid) (port 80/443 won't work)"
   fi
   echo ""
 }
@@ -230,17 +248,17 @@ status() {
 all() {
   echo ""
   echo "═══════════════════════════════════════════"
-  echo "  CCS Phase 1 — Local K8s Setup"
+  echo "  CCS Phase 1 — Local K8s Setup (single-node)"
   echo "  Cluster: ${CLUSTER}"
   echo "  Namespace: ${NAMESPACE}"
   echo "═══════════════════════════════════════════"
   echo ""
   check_prereqs
   start_cluster
-  setup_nodes
+  setup_nodes    # skips on Docker Desktop unless --force is passed
   create_namespace
   build_images
-  start_tunnel
+  start_tunnel   # background tunnel; run 'minikube tunnel -p ...' in terminal for ingress
   status
   log "Phase 1 complete. Next: helm install ccs ./helm/ccs -n ${NAMESPACE}"
 }
@@ -251,18 +269,20 @@ all() {
 case "${1:-all}" in
   prereqs)      check_prereqs ;;
   cluster)      start_cluster; setup_nodes; create_namespace; start_tunnel ;;
+  nodes)        setup_nodes "${2:-}" ;;
   images)       build_images "${2:-}" ;;
   tunnel)       start_tunnel ;;
   status|check) status ;;
   all)          all ;;
   *)
-    echo "Usage: $0 {prereqs|cluster|images|tunnel|status|all} [--build]"
+    echo "Usage: $0 {prereqs|cluster|images|nodes|tunnel|status|all} [--build|--force]"
     echo ""
-    echo "  all        Full Phase 1 setup (default)"
-    echo "  prereqs    Verify tools, install helm-diff, add repos"
-    echo "  cluster    Start cluster + worker node + CNI + namespace + tunnel"
-    echo "  images     Build + load images (add --build to force rebuild)"
-    echo "  tunnel     Start minikube tunnel"
-    echo "  status     Show cluster state"
+    echo "  all            Full Phase 1 setup (single-node, default)"
+    echo "  prereqs        Verify tools, install helm-diff, add repos"
+    echo "  cluster        Start cluster + namespace + tunnel (no worker node)"
+    echo "  nodes [--force]  Add a worker node + install Flannel CNI (Docker Desktop skips unless --force)"
+    echo "  images [--build] Build & load into minikube nodes"
+    echo "  tunnel         Start background tunnel (no sudo — use 'minikube tunnel' for ingress)"
+    echo "  status         Show cluster state"
     ;;
 esac

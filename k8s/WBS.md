@@ -9,7 +9,7 @@
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| Local K8s flavor | **minikube** (single-node K8s) | Already installed. Built-in addon system. `minikube tunnel` for LoadBalancer. `docker-env` for direct image builds. |
+| Local K8s flavor | **minikube** (single-node K8s) | Already installed. Built-in addon system. Docker Desktop VXLAN doesn't support multi-node, so single-node only. |
 | Helm pattern | **Umbrella chart** | Single `helm install` for the whole stack. Simple to understand. |
 | Postgres on K8s | **Bitnami chart** (dev) | Simplest to set up. No CRD/operator dependency for local learning. |
 | Postgres pooling | **Skip for dev** (direct conn) | PgBouncer adds complexity without benefit at dev scale. |
@@ -56,16 +56,18 @@
   nohup minikube tunnel -p local-ccs-cluster > /tmp/minikube-tunnel.log 2>&1 &
   ```
   This maps LoadBalancer services to `127.0.0.1`.
-- [x] Add worker node:
+- [x] Add worker node (optional — removed later):
   ```bash
   minikube node add -p local-ccs-cluster
   ```
   Each invocation adds one worker node. Verify with `kubectl get nodes`.
-- [x] Install CNI for multi-node networking (Flannel):
+  > **Note:** Multi-node requires a CNI (Flannel) for cross-node pod networking. Docker Desktop on macOS doesn't properly support VXLAN tunnels, so cross-node DNS/pod communication fails. For dev, use single-node only.
+- [x] Install CNI for multi-node networking (Flannel) — installed but removed worker after discovering VXLAN incompatibility with Docker Desktop:
   ```bash
   kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
   ```
   Required when adding a worker node — pod networking won't work across nodes without a CNI.
+  > **Note:** Flannel works fine on the control plane. Cross-node VXLAN is broken on Docker Desktop (LinuxKit VM limitation). Single-node cluster avoids this entirely.
 - [x] Create namespace: `kubectl create ns ccs-dev`
   Everything (app, ingress, postgres) goes in one namespace for dev simplicity.
 - [ ] Destroy / recreate to practice:
@@ -262,6 +264,7 @@ helm/ccs/charts/frontend/
   ```
 - [x] Understand: with 1 replica + 1 node, anti-affinity has no effect yet. It's ready for when you scale.
 - [x] Add affinity block to Postgres subchart values override (Bitnami chart supports it via `primary.affinity`)
+> **Note:** All affinity rules are soft-preferences and harmless on single-node. They'll only matter when you add worker nodes.
 
 > **Check:**
 > ```bash
@@ -303,16 +306,15 @@ helm/ccs/charts/frontend/
     initialDelaySeconds: 5
     periodSeconds: 15
   ```
-- [ ] Test probes:
+- [x] Test probes:
   ```bash
-  # Simulate liveness failure
-  kubectl exec deploy/ccs-backend -n ccs-dev -- kill 1
-  kubectl get pods -n ccs-dev -w  # watch restart
-
-  # Check probe status
-  kubectl describe pod -n ccs-dev -l app.kubernetes.io/component=backend | grep -A5 'Liveness\|Readiness\|Startup'
+  # Verified all 3 probes via curl:
+  # GET /health → {"status":"ok"}
+  # GET /ready → {"status":"ready","db":"connected"}
+  # GET /startup → {"status":"started","schema":true}
   ```
-- [ ] Verify startup probe delays liveness until DB is ready (seed job completes)
+- [x] Verify startup probe delays liveness until DB is ready (seed job completes)
+  > Backend restarted 3× during initialization before startup probe passed (DB wasn't seeded yet). Expected behavior.
 
 > **Check:**
 > ```bash
@@ -321,6 +323,29 @@ helm/ccs/charts/frontend/
 > curl -s http://localhost:8000/ready && echo "" && \
 > curl -s http://localhost:8000/startup
 > kill %1 2>/dev/null
+> ```
+
+### 2.9 Deployment & verification
+
+- [x] `helm install ccs ./helm/ccs -n ccs-dev --timeout 10m` — all pods healthy:
+  - `ccs-postgresql-0`: 1/1 Running
+  - `ccs-ingress-nginx-controller`: 1/1 Running
+  - `ccs-backend`: 1/1 Running (startup probe passes after DB seeded)
+  - `ccs-frontend`: 1/1 Running
+  - `ccs-seed-data`: Completed (13s, DB init + CSV ingest)
+- [x] Seed job fixed with retry loop (20 attempts, 5s apart) for Postgres readiness
+- [x] Seed job: `ingest_from_csv()` takes no args — removed incorrect `pool` parameter
+- [x] Cleanup: delete leftover PVCs before re-deploy (`kubectl delete pvc -n ccs-dev --all`)
+- [x] Verified API returns data: `/presets` returns 10 facilities, `/schedule/CCS-A` returns injection schedule
+- [x] Frontend serves Dash HTML at `http://localhost:8050`
+- [x] Ingress deployed with `api.ccs.local` and `app.ccs.local` routes
+- [x] Tunnel requires `sudo` for privileged ports (80/443) — run `minikube tunnel -p local-ccs-cluster` in foreground terminal
+
+> **Check:**
+> ```bash
+> kubectl get pods -n ccs-dev -o wide | grep -E 'Running|Completed' | wc -l | xargs echo "Healthy pods:"
+> kubectl logs -n ccs-dev -l job-name=ccs-seed-data --tail=3
+> curl -s --max-time 5 http://localhost:8000/health
 > ```
 
 ---
@@ -357,10 +382,10 @@ helm/ccs/charts/frontend/
 
 ### 3.3 K8s-specific backend changes
 
-- [ ] Add `/health` endpoint (already exists — verify it doesn't check DB for liveness)
-- [ ] Add `/ready` endpoint that checks DB pool connectivity (for readiness probe)
-- [ ] Add `/startup` endpoint that checks DB schema exists (for startup probe)
-- [ ] Make DB host/port/user/password configurable via env vars (already done via ConfigMap)
+- [x] Add `/health` endpoint (already exists — verify it doesn't check DB for liveness)
+- [x] Add `/ready` endpoint that checks DB pool connectivity (for readiness probe)
+- [x] Add `/startup` endpoint that checks DB schema exists (for startup probe)
+- [x] Make DB host/port/user/password configurable via env vars (already done via ConfigMap)
 - [ ] Add structured JSON logging (stdout) — compatible with Loki later
 
 > **Check:**
@@ -368,7 +393,12 @@ helm/ccs/charts/frontend/
 > curl -s http://localhost:8000/health | python3 -m json.tool | head -5
 > ```
 
-### 3.4 Readiness checklist
+### 3.4 Frontend K8s changes
+
+- [x] Add `/health` Flask route to Dash app (for liveness/readiness probes)
+- [x] Read `BACKEND_URL` from environment variable (already done)
+
+### 3.5 Readiness checklist
 
 - [ ] Backend starts without DB (liveness probe passes)
 - [ ] Backend reports not-ready when DB is unreachable (readiness probe fails)
@@ -624,27 +654,31 @@ Partial runs: `./k8s/setup.sh prereqs` | `cluster` | `images`
 # 1. Start minikube
 minikube start --cpus 4 --memory 6144 --driver docker -p local-ccs-cluster
 
-# 2. Start tunnel (keep running in separate terminal)
+# 2. Start tunnel (keep running in separate terminal — will ask for sudo)
 minikube tunnel -p local-ccs-cluster
 
-# 3. Point Docker at minikube's daemon
-eval $(minikube docker-env -p local-ccs-cluster)
+# 3. Build images (local, then load into minikube — no registry needed)
+docker build -t ccs-backend:latest -f docker/Dockerfile.backend .
+minikube image load ccs-backend:latest --daemon -p local-ccs-cluster
+docker build -t ccs-frontend:latest -f docker/Dockerfile.frontend .
+minikube image load ccs-frontend:latest --daemon -p local-ccs-cluster
 
-# 4. Build images (goes directly into minikube)
-docker build -t ccs-backend:k8s -f docker/Dockerfile.backend .
-docker build -t ccs-frontend:k8s -f docker/Dockerfile.frontend .
+# 4. Build Helm dependencies
+helm dependency build helm/ccs/
 
-# 5. Build Helm dependencies
-helm dependency update helm/ccs/
+# 5. Deploy everything
+helm upgrade --install ccs ./helm/ccs -f helm/ccs/values.yaml -n ccs-dev --create-namespace --timeout 10m
 
-# 6. Deploy everything
-helm upgrade --install ccs ./helm/ccs -f helm/ccs/values.yaml -n ccs-dev --create-namespace
-
-# 7. Watch pods come up
+# 6. Watch pods come up
 kubectl get pods -n ccs-dev -w
 
-# 8. Test
-curl -H "Host: api.ccs.local" http://localhost/health
+# 7. Test via port-forward (no tunnel needed)
+kubectl port-forward svc/ccs-backend -n ccs-dev 8000:80 &
+curl http://localhost:8000/health
+curl http://localhost:8000/presets | python3 -m json.tool
+
+# 8. Add /etc/hosts entries (one-time)
+echo '127.0.0.1 api.ccs.local app.ccs.local' | sudo tee -a /etc/hosts
 
 # 9. Open browser → http://app.ccs.local
 ```

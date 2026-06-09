@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -19,8 +20,17 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Initialising database tables ...")
-    await init_db()
+    logger.info("Waiting for database ...")
+    for attempt in range(30):
+        try:
+            await init_db()
+            break
+        except Exception as e:
+            if attempt < 29:
+                logger.warning("DB not ready (attempt %d/30): %s", attempt + 1, e)
+                await asyncio.sleep(2)
+            else:
+                raise
     logger.info("Running CSV ingestion (idempotent) ...")
     await ingest_from_csv()
     logger.info("Loading data into simulator ...")
