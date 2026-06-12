@@ -97,7 +97,24 @@ ingress-nginx:
 
 # --- Optional (disabled for dev) ---
 redis:
-  enabled: false
+  enabled: true
+  fullnameOverride: ccs-redis
+  image:
+    registry: docker.io
+    repository: redis
+    tag: "7.4"
+    pullPolicy: IfNotPresent
+  volumePermissions:
+    enabled: false
+  metrics:
+    enabled: false
+  commonConfiguration: |
+    maxmemory 100mb
+    maxmemory-policy allkeys-lru
+  auth:
+    enabled: false
+  replica:
+    replicaCount: 0
 
 monitoring:
   enabled: false

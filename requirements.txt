@@ -25,6 +25,8 @@ packaging==26.2
 pandas==3.0.3
 plotly==6.7.0
 pluggy==1.6.0
+redis==5.2.1
+hiredis==2.4.0
 pydantic==2.13.4
 pydantic_core==2.46.4
 Pygments==2.20.0

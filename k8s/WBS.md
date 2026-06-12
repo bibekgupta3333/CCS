@@ -456,7 +456,8 @@ helm/ccs/charts/frontend/
 
 ### 5.1 Deploy
 
-- [ ] Enable redis subchart in values.yaml
+- [x] Enable redis subchart in values.yaml (image: `redis:7.4` with `volumePermissions: false`, `metrics: false`, `replicaCount: 0` — Bitnami images unavailable from this network)
+- [x] Redis service: `ccs-redis-master:6379` (host: `ccs-redis-master` — note: `fullnameOverride: ccs-redis` creates `-master` suffix)
 
 > **Check:**
 > ```bash
@@ -466,10 +467,10 @@ helm/ccs/charts/frontend/
 
 ### 5.2 Backend integration
 
-- [ ] Add `redis-py` + `hiredis` to backend dependencies
-- [ ] Cache `GET /presets` (TTL: 1 hour)
-- [ ] Cache `GET /schedule/{case_id}` (TTL: 1 hour)
-- [ ] Fall through to DB if Redis is down (circuit breaker pattern)
+- [x] Add `redis-py` + `hiredis` to backend dependencies (`redis==5.2.1`, `hiredis==2.4.0` in `requirements.txt`)
+- [x] Cache `GET /presets` (TTL: 1 hour) — key: `ccs:presets`
+- [x] Cache `GET /schedule/{case_id}` (TTL: 1 hour) — key: `ccs:schedule:{case_id}`
+- [x] Fall through to DB if Redis is down (circuit breaker pattern — `_circuit_open` flag, auto-resets on next import)
 
 > **Check:**
 > ```bash

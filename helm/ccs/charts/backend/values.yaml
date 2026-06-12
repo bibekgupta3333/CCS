@@ -24,3 +24,8 @@ database:
   username: ccs
   password: ccs_password
   name: ccs_db
+
+redis:
+  host: ccs-redis-master
+  port: 6379
+  enabled: true

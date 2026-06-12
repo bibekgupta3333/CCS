@@ -2,15 +2,21 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
+from backend.cache import get_cached, set_cached
 from backend.models import PresetItem
 from backend.state import get_simulator
 
 router = APIRouter(tags=["Presets"])
 
+PRESETS_KEY = "ccs:presets"
+
 
 @router.get("/presets", response_model=list[PresetItem])
 async def get_presets():
-    """Return all 10 CCS facility presets from the full dataset."""
+    cached = await get_cached(PRESETS_KEY)
+    if cached is not None:
+        return [PresetItem(**p) for p in cached]
+
     sim = await get_simulator()
     presets = []
     for case_id in sim.available_cases:
@@ -28,4 +34,6 @@ async def get_presets():
                 transport_mode=p["transport_mode"],
             )
         )
+    result = [p.model_dump(mode="json") for p in presets]
+    await set_cached(PRESETS_KEY, result)
     return presets
