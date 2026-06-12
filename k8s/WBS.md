@@ -231,7 +231,7 @@ helm/ccs/charts/frontend/
 
 ### 2.7 Node affinity rules
 
-- [ ] Add `nodeSelector` to Postgres deployment (prefer worker node):
+- [x] Postgres node affinity applied via `primary.affinity.preferredDuringScheduling` (hard `nodeSelector` not needed on single-node):
   ```yaml
   nodeSelector:
     node-role.kubernetes.io/control-plane: "false"
@@ -354,11 +354,11 @@ helm/ccs/charts/frontend/
 
 ### 3.1 Backend Dockerfile
 
-- [ ] Multi-stage build:
+- [x] Multi-stage build:
   - **Builder**: `python:3.12-slim` — install deps, copy code
   - **Final**: `python:3.12-slim` — copy venv from builder, non-root user
-- [ ] Add `--user 1000:1000` (or use `USER 1000` in Dockerfile)
-- [ ] Add graceful shutdown handling:
+- [x] Add `USER 1000` in Dockerfile
+- [x] Add graceful shutdown handling:
   - `uvicorn --timeout-graceful-shutdown 20`
   - `terminationGracePeriodSeconds: 30` in deployment
 
@@ -370,9 +370,9 @@ helm/ccs/charts/frontend/
 
 ### 3.2 Frontend Dockerfile
 
-- [ ] Similar multi-stage build as backend
-- [ ] Read `BACKEND_URL` from environment variable (not hardcoded)
-- [ ] Non-root user, read-only root filesystem
+- [x] Similar multi-stage build as backend
+- [x] Read `BACKEND_URL` from environment variable (not hardcoded)
+- [x] Non-root user, read-only root filesystem
 
 > **Check:**
 > ```bash
@@ -386,7 +386,7 @@ helm/ccs/charts/frontend/
 - [x] Add `/ready` endpoint that checks DB pool connectivity (for readiness probe)
 - [x] Add `/startup` endpoint that checks DB schema exists (for startup probe)
 - [x] Make DB host/port/user/password configurable via env vars (already done via ConfigMap)
-- [ ] Add structured JSON logging (stdout) — compatible with Loki later
+- [x] Add structured JSON logging (stdout) — compatible with Loki later
 
 > **Check:**
 > ```bash
@@ -400,11 +400,11 @@ helm/ccs/charts/frontend/
 
 ### 3.5 Readiness checklist
 
-- [ ] Backend starts without DB (liveness probe passes)
-- [ ] Backend reports not-ready when DB is unreachable (readiness probe fails)
-- [ ] Frontend starts without backend (shows error state gracefully)
-- [ ] Frontend connects to backend via BACKEND_URL env var
-- [ ] ConfigMap changes trigger pod restart (or reload)
+- [x] Backend starts without DB (liveness probe passes)
+- [x] Backend reports not-ready when DB is unreachable (readiness probe fails)
+- [x] Frontend starts without backend (shows error state gracefully)
+- [x] Frontend connects to backend via BACKEND_URL env var
+- [x] ConfigMap changes trigger pod restart (or reload)
 
 > **Check:**
 > ```bash

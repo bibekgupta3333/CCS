@@ -18,8 +18,13 @@ spec:
       labels:
         app.kubernetes.io/component: backend
         app.kubernetes.io/part-of: ccs
+      annotations:
+        checksum/config: {{ .Values.databaseUrl | sha256sum }}{{ .Values.logLevel | sha256sum }}
     spec:
       serviceAccountName: {{ include "backend.fullname" . }}
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        fsGroup: 1000
       affinity:
         nodeAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -56,6 +61,15 @@ spec:
                   key: LOG_LEVEL
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
           startupProbe:
             httpGet:
               path: /startup

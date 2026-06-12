@@ -20,6 +20,9 @@ spec:
         app.kubernetes.io/part-of: ccs
     spec:
       serviceAccountName: {{ include "frontend.fullname" . }}
+      terminationGracePeriodSeconds: 10
+      securityContext:
+        fsGroup: 1000
       affinity:
         nodeAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -40,6 +43,15 @@ spec:
               value: "http://{{ .Release.Name }}-backend:80"
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
           livenessProbe:
             httpGet:
               path: /health

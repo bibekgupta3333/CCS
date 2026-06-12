@@ -451,15 +451,18 @@ app.layout = html.Div(
     Input("case-selector", "id"),
 )
 def load_case_options(_):
-    presets = fetch_json("/presets")
-    options = [
-        {
-            "label": f"{p['case_id']} — {p['reservoir_type']} ({p['p_init_MPa']:.1f} MPa)",
-            "value": p["case_id"],
-        }
-        for p in presets
-    ]
-    return options, options[0]["value"] if options else None
+    try:
+        presets = fetch_json("/presets")
+        options = [
+            {
+                "label": f"{p['case_id']} — {p['reservoir_type']} ({p['p_init_MPa']:.1f} MPa)",
+                "value": p["case_id"],
+            }
+            for p in presets
+        ]
+        return options, options[0]["value"] if options else None
+    except Exception:
+        return [], None
 
 
 # ---------------------------------------------------------------

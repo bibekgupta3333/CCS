@@ -1,13 +1,26 @@
-FROM python:3.12-slim
+FROM python:3.12-slim AS builder
+
+WORKDIR /build
+
+RUN pip install --no-cache-dir --upgrade pip
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+FROM python:3.12-slim AS final
+
+RUN groupadd --system --gid 1000 ccs && \
+    useradd --system --uid 1000 --gid ccs --no-create-home ccs
+
+RUN mkdir -p /app /tmp/app && chown -R ccs:ccs /app /tmp/app
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
+COPY --from=builder /install /usr/local
 COPY frontend/ ./frontend/
 
 EXPOSE 8050
 
+USER 1000
 
 CMD ["python", "frontend/app.py"]
