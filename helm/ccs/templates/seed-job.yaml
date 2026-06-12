@@ -29,8 +29,7 @@ spec:
             - python
             - -c
             - |
-              import asyncio, os, time
-              os.environ["DATABASE_URL"] = "{{ include "ccs.databaseUrl" . }}"
+              import asyncio
               from backend.database import init_db, ingest_from_csv
               async def main():
                   for attempt in range(20):
@@ -39,14 +38,18 @@ spec:
                           break
                       except Exception as e:
                           if attempt < 19:
-                              print(f"DB not ready (attempt {attempt+1}/20): {e}")
-                              await asyncio.sleep(5)
+                                  print(f"DB not ready (attempt {attempt+1}/20): {e}")
+                                  await asyncio.sleep(5)
                           else:
-                              raise
+                                  raise
                   await ingest_from_csv()
                   print("Seed complete")
               asyncio.run(main())
+          envFrom:
+            - secretRef:
+                name: {{ .Release.Name }}-backend-db-secret
           env:
             - name: DATABASE_URL
-              value: {{ include "ccs.databaseUrl" . | quote }}
+              value: >-
+                postgresql://$(DB_USER):$(DB_PASSWORD)@$(DB_HOST):$(DB_PORT)/$(DB_NAME)
 {{- end }}

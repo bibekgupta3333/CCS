@@ -19,7 +19,7 @@ spec:
         app.kubernetes.io/component: backend
         app.kubernetes.io/part-of: ccs
       annotations:
-        checksum/config: {{ .Values.databaseUrl | sha256sum }}{{ .Values.logLevel | sha256sum }}
+        checksum/config: {{ .Values.logLevel | sha256sum }}{{ include "backend.fullname" . | sha256sum }}
     spec:
       serviceAccountName: {{ include "backend.fullname" . }}
       terminationGracePeriodSeconds: 30
@@ -51,9 +51,13 @@ spec:
           ports:
             - containerPort: 8000
               name: http
+          envFrom:
+            - secretRef:
+                name: {{ include "backend.fullname" . }}-db-secret
           env:
             - name: DATABASE_URL
-              value: {{ .Values.databaseUrl | quote }}
+              value: >-
+                postgresql://$(DB_USER):$(DB_PASSWORD)@$(DB_HOST):$(DB_PORT)/$(DB_NAME)
             - name: LOG_LEVEL
               valueFrom:
                 configMapKeyRef:

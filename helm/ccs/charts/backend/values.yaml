@@ -18,4 +18,9 @@ resources:
 
 logLevel: INFO
 
-databaseUrl: "postgresql://ccs:ccs_password@ccs-postgresql:5432/ccs_db"
+database:
+  host: ccs-postgresql
+  port: 5432
+  username: ccs
+  password: ccs_password
+  name: ccs_db

@@ -417,8 +417,8 @@ helm/ccs/charts/frontend/
 
 ### 4.1 Deploy via Bitnami chart
 
-- [ ] Enable postgresql subchart in values.yaml
-- [ ] Understand the chart's generated service name: `ccs-postgresql`
+- [x] Enable postgresql subchart in values.yaml
+- [x] Understand the chart's generated service name: `ccs-postgresql`
 
 > **Check:**
 > ```bash
@@ -428,7 +428,7 @@ helm/ccs/charts/frontend/
 
 ### 4.2 Data migration (seed job)
 
-- [ ] Create `helm/ccs/templates/seed-job.yaml`:
+- [x] Create `helm/ccs/templates/seed-job.yaml`:
   - Runs `init_db()` + `ingest_from_csv()` using the backend image
   - Mounts CSV files from a ConfigMap or uses the baked-in data/
   - Job deletes itself on completion (`ttlSecondsAfterFinished: 100`)
@@ -441,13 +441,13 @@ helm/ccs/charts/frontend/
 
 ### 4.3 ConfigMap vs Secret for DB password
 
-- [ ] For dev: put DB password in ConfigMap (simple, not a real secret)
-- [ ] Understand: in prod you'd use a Kubernetes Secret + External Secrets Operator
-- [ ] Practice: move `DB_PASSWORD` to a Secret and reference it with `secretKeyRef`
+- [x] For dev: put DB password in ConfigMap (simple, not a real secret)
+- [x] Understand: in prod you'd use a Kubernetes Secret + External Secrets Operator
+- [x] Practice: move `DB_PASSWORD` to a Secret and reference it with `secretKeyRef`
 
 > **Check:**
 > ```bash
-> kubectl get configmap -n ccs-dev backend-config -o jsonpath='{.data.DB_PASSWORD}' | head -c 4 && echo "... (exists)"
+> kubectl get secret -n ccs-dev ccs-backend-db-secret -o jsonpath='{.data.DB_PASSWORD}' | base64 -d && echo ""
 > ```
 
 ---

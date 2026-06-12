@@ -17,9 +17,12 @@ backend:
       cpu: 512m
       memory: 1Gi
   logLevel: INFO
-  # Database URL — must match postgresql.auth below
-  # The hostname {{ .Release.Name }}-postgresql matches postgresql.fullnameOverride
-  databaseUrl: "postgresql://ccs:ccs_password@ccs-postgresql:5432/ccs_db"
+  database:
+    host: ccs-postgresql
+    port: 5432
+    username: ccs
+    password: ccs_password
+    name: ccs_db
 
 # --- Frontend subchart ---
 frontend:
