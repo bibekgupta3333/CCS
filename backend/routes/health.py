@@ -3,7 +3,6 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from backend.database import get_pool
-from backend.state import get_simulator
 
 router = APIRouter(tags=["Health"])
 

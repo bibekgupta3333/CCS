@@ -38,12 +38,12 @@ async def get_cached(key: str) -> Optional[Any]:
             return None
         val = await client.get(key)
         if val is not None:
-            logger.info(f"Cache HIT: {key}")
+            logger.info("Cache HIT: %s", key)
             return json.loads(val)
-        logger.info(f"Cache MISS: {key}")
+        logger.info("Cache MISS: %s", key)
         return None
     except Exception as e:
-        logger.warning(f"Redis unavailable, circuit break: {e}")
+        logger.warning("Redis unavailable, circuit break: %s", e)
         _circuit_open = True
         return None
 
@@ -58,7 +58,7 @@ async def set_cached(key: str, value: Any, ttl: int = CACHE_TTL) -> bool:
         await client.set(key, json.dumps(value), ex=ttl)
         return True
     except Exception as e:
-        logger.warning(f"Redis write failed: {e}")
+        logger.warning("Redis write failed: %s", e)
         return False
 
 

@@ -1,0 +1,31 @@
+[MASTER]
+jobs=0
+
+[MESSAGES CONTROL]
+disable=
+    missing-module-docstring,
+    missing-class-docstring,
+    missing-function-docstring,
+    too-few-public-methods,
+    too-many-instance-attributes,
+    too-many-locals,
+    too-many-arguments,
+    too-many-positional-arguments,
+    import-outside-toplevel,
+    protected-access,
+    unused-argument,
+    broad-exception-caught,
+    consider-using-from-import,
+    wrong-import-order,
+    wrong-import-position,
+    duplicate-code,
+    redefined-outer-name,
+    invalid-name,
+    global-statement,
+    use-dict-literal,
+
+[REPORTS]
+score=yes
+
+[FORMAT]
+max-line-length=300

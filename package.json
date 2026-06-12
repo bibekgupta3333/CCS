@@ -19,6 +19,9 @@
     "k8s:helm-lint": "make helm-lint",
     "k8s:helm-deploy": "make helm-deploy",
     "k8s:helm-delete": "make helm-delete",
-    "k8s:add-node": "make minikube-add-node"
+    "k8s:add-node": "make minikube-add-node",
+    "lint": "npm run lint:backend && npm run lint:frontend",
+    "lint:backend": "source venv/bin/activate && python -m pylint --rcfile=backend/.pylintrc backend/",
+    "lint:frontend": "source venv/bin/activate && python -m pylint --rcfile=frontend/.pylintrc frontend/"
   }
 }

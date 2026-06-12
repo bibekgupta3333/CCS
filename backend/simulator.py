@@ -1,7 +1,6 @@
 import asyncio
 import math
 from dataclasses import dataclass
-from datetime import date
 from typing import AsyncIterator, Dict, Optional
 
 import numpy as np
