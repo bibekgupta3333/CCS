@@ -483,8 +483,10 @@ helm/ccs/charts/frontend/
 
 ### 6.1 Install ingress controller
 
-- [ ] Enable ingress-nginx subchart in values.yaml
-- [ ] Understand: minikube tunnel maps LoadBalancer to `127.0.0.1`
+- [x] Enable ingress-nginx subchart in values.yaml (`enabled: true`, already set when chart was created)
+- [x] Understand: minikube tunnel maps LoadBalancer to `127.0.0.1`
+  - **Important**: `minikube tunnel` must run in a **separate terminal with sudo**
+  - Without tunnel, ingress works from **inside** minikube VM only
 
 > **Check:**
 > ```bash
@@ -494,13 +496,14 @@ helm/ccs/charts/frontend/
 
 ### 6.2 Test routing
 
-- [ ] Add entries to `/etc/hosts`:
+- [x] Add entries to `/etc/hosts`:
   ```
   127.0.0.1 api.ccs.local app.ccs.local
   ```
-- [ ] Test backend: `curl -H "Host: api.ccs.local" http://localhost/health`
-- [ ] Test frontend: open `http://app.ccs.local` in browser
-- [ ] Test WebSocket: `websocat ws://api.ccs.local/ws`
+- [x] Test from inside minikube: `curl -H "Host: api.ccs.local" http://localhost/health` → `200`
+- [x] cors-allow-headers: changed `*` to explicit list (ingress-nginx 1.15 rejects `*`)
+- [ ] Test frontend in browser: run `sudo minikube tunnel -p local-ccs-cluster` in another terminal first, then `http://app.ccs.local`
+- [ ] Test WebSocket: run tunnel first, then `websocat ws://api.ccs.local/ws`
 
 > **Check:**
 > ```bash
@@ -509,10 +512,12 @@ helm/ccs/charts/frontend/
 
 ### 6.3 Ingress annotations to understand
 
-- [ ] `proxy-read-timeout: 3600` — WebSocket long-lived connections
-- [ ] `proxy-body-size: 8m` — allow larger payloads
-- [ ] `cors-*` headers — cross-origin requests from frontend to API
-- [ ] `limit-rps / limit-connections` — rate limiting per IP
+- [x] `proxy-read-timeout: 3600` — WebSocket long-lived connections
+- [x] `proxy-send-timeout: 3600` — WebSocket long-lived connections
+- [x] `proxy-body-size: 8m` — allow larger payloads
+- [x] `enable-cors` + `cors-allow-origin` + `cors-allow-methods` + `cors-allow-headers` — cross-origin requests from frontend to API
+- [x] `cors-allow-headers` fixed: `*` is rejected by ingress-nginx ≥1.15; changed to explicit header list
+- [x] `limit-rps: 100` + `limit-connections: 50` — rate limiting per IP
 
 > **Check:**
 > ```bash
