@@ -530,22 +530,25 @@ helm/ccs/charts/frontend/
 
 ### 7.1 Prometheus + Grafana
 
-- [ ] Enable kube-prometheus-stack subchart in values.yaml
-- [ ] Understand: this chart is ~50MB and deploys ~10 pods + CRDs
-- [ ] Monitor RAM usage: `kubectl top pods -n ccs-dev` (expect ~1-1.5GB extra)
-- [ ] Port-forward Grafana: `kubectl port-forward -n ccs-dev svc/ccs-grafana 3000:80`
+- [x] Enable kube-prometheus-stack subchart in values.yaml (chart version `86.2.3`, app version `v0.91.0`)
+- [x] Understand: this chart is ~50MB and deploys ~10 pods + CRDs
+  - **Note**: CRDs must be installed first with `kubectl apply --server-side -f charts/kube-prometheus-stack-86.2.3.tgz/crds/`
+- [x] Monitor RAM usage: `kubectl top pods -n ccs-dev` (actual: ~700MB extra with minimal config)
+  - Grafana: 382Mi | Prometheus: 208Mi | Alertmanager: 41Mi | Others: ~70Mi
+- [x] Port-forward Grafana: `kubectl port-forward -n ccs-dev svc/ccs-grafana 3000:80` → opens at `http://localhost:3000` (default login: `admin`/`admin`)
+- [x] Metrics-server enabled (needs `--kubelet-insecure-tls` on minikube Docker driver)
 
 > **Check:**
 > ```bash
-> kubectl get pods -n ccs-dev -l app=prometheus 2>/dev/null | head -3 && echo "---" || echo "Monitoring not enabled"
+> kubectl get pods -n ccs-dev -l app.kubernetes.io/name=prometheus 2>/dev/null | head -3 && echo "---" || echo "Monitoring not enabled"
 > curl -s -o /dev/null -w "%{http_code}" http://localhost:3000 2>/dev/null && echo " Grafana reachable" || echo "Grafana not reachable (port-forward needed)"
 > ```
 
 ### 7.2 Application metrics
 
-- [ ] Add `prometheus-fastapi-instrumentator` to backend
-- [ ] Expose `/metrics` endpoint
-- [ ] Create ServiceMonitor in backend subchart
+- [x] Add `prometheus-fastapi-instrumentator==8.0.0` to `requirements.txt` (import in `main.py`)
+- [x] Expose `/metrics` endpoint — `Instrumentator().instrument(app).expose(app, endpoint="/metrics")` in `main.py:106`
+- [x] Create `servicemonitor.yaml` in backend subchart — scrapes port `http` at `/metrics` every 15s
 
 > **Check:**
 > ```bash
@@ -554,12 +557,18 @@ helm/ccs/charts/frontend/
 
 ### 7.3 Logging (Loki)
 
-- [ ] Install Loki + Promtail via Grafana chart
-- [ ] View backend logs in Grafana Explore with LogQL
+- [x] Install Loki + Promtail via Grafana Helm chart
+  - Loki v7.0.0, `SingleBinary` mode, filesystem storage, `auth_enabled: false`, `testSchema` not used (proper schemaConfig with TSDB v13)
+  - CRDs issue: `ServiceMonitor "ccs-backend"` and `Deployment "ccs-grafana"` must be helm-managed (deleted created-by-kubectl ones)
+- [x] View backend logs in Grafana Explore with LogQL
+  - Loki datasource added to Grafana (`ccs-loki-gateway:80`)
+  - Logs verified via Grafana API: `{app="backend"}` returns rows
+  - Query via Grafana: Explore → Loki → `{app="backend"}`
 
 > **Check:**
 > ```bash
 > kubectl get pods -n ccs-dev -l app.kubernetes.io/name=loki 2>/dev/null | head -3 || echo "Loki not enabled"
+> kubectl get pods -n ccs-dev -l app.kubernetes.io/name=promtail 2>/dev/null | head -3 || echo "Promtail not enabled"
 > ```
 
 ---

@@ -14,5 +14,14 @@ dependencies:
 - name: redis
   repository: https://charts.bitnami.com/bitnami
   version: 20.6.1
-digest: sha256:3e6ce5df546fce374206d965a5541cbca6e1f3d8025e734dd34b843de8b65707
-generated: "2026-06-12T14:56:49.521146-04:00"
+- name: kube-prometheus-stack
+  repository: https://prometheus-community.github.io/helm-charts
+  version: 86.2.3
+- name: loki
+  repository: https://grafana.github.io/helm-charts
+  version: 7.0.0
+- name: promtail
+  repository: https://grafana.github.io/helm-charts
+  version: 6.17.1
+digest: sha256:d04f7c176a640322c51e02c72d90626303c9ed5b17fb76392324c34578e69ad5
+generated: "2026-06-14T01:02:11.957958-04:00"

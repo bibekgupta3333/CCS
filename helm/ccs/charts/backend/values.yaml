@@ -29,3 +29,6 @@ redis:
   host: ccs-redis-master
   port: 6379
   enabled: true
+
+serviceMonitor:
+  enabled: true

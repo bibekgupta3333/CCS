@@ -23,6 +23,8 @@ backend:
     username: ccs
     password: ccs_password
     name: ccs_db
+  serviceMonitor:
+    enabled: true
 
 # --- Frontend subchart ---
 frontend:
@@ -117,4 +119,121 @@ redis:
     replicaCount: 0
 
 monitoring:
-  enabled: false
+  enabled: true
+
+kube-prometheus-stack:
+  alertmanager:
+    enabled: false
+  prometheus:
+    prometheusSpec:
+      replicas: 1
+      resources:
+        requests:
+          cpu: 200m
+          memory: 512Mi
+        limits:
+          cpu: 500m
+          memory: 1Gi
+      retention: 1d
+      retentionSize: 5GB
+      storageSpec:
+        disableMountSubPath: true
+      scrapeInterval: 30s
+      evaluationInterval: 30s
+  grafana:
+    enabled: true
+    forceDeployDatasources: true
+    forceDeployDashboards: true
+    adminPassword: admin
+    persistence:
+      enabled: false
+    additionalDataSources:
+      - name: Loki
+        type: loki
+        url: http://ccs-loki-gateway:80
+        access: proxy
+        isDefault: false
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+    ingress:
+      enabled: false
+    service:
+      port: 3000
+  kubeStateMetrics:
+    enabled: true
+  nodeExporter:
+    enabled: true
+  prometheusOperator:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
+
+# --- Loki + Promtail ---
+loki:
+  enabled: true
+  fullnameOverride: ccs-loki
+  deploymentMode: SingleBinary
+  loki:
+    auth_enabled: false
+    storage:
+      type: filesystem
+    commonConfig:
+      replication_factor: 1
+    schemaConfig:
+      configs:
+        - from: "2024-04-01"
+          store: tsdb
+          object_store: filesystem
+          schema: v13
+          index:
+            prefix: index_
+            period: 24h
+  lokiCanary:
+    enabled: false
+  write:
+    replicas: 0
+  read:
+    replicas: 0
+  backend:
+    replicas: 0
+  chunksCache:
+    enabled: false
+  resultsCache:
+    enabled: false
+  persistence:
+    enabled: true
+    size: 5Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 200m
+      memory: 512Mi
+  gateway:
+    enabled: true
+  test:
+    enabled: false
+
+promtail:
+  enabled: true
+  fullnameOverride: ccs-promtail
+  config:
+    clients:
+      - url: http://ccs-loki-gateway:80/loki/api/v1/push
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi

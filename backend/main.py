@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from backend.database import init_db, ingest_from_csv, close_pool
 from backend.state import get_simulator
@@ -101,3 +102,5 @@ app.include_router(presets_router)
 app.include_router(schedule_router)
 app.include_router(simulate_router)
 app.include_router(ws_router)
+
+Instrumentator().instrument(app).expose(app, endpoint="/metrics")

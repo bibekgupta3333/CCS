@@ -28,6 +28,7 @@ pluggy==1.6.0
 pylint==3.3.4
 redis==5.2.1
 hiredis==2.4.0
+prometheus-fastapi-instrumentator==8.0.0
 pydantic==2.13.4
 pydantic_core==2.46.4
 Pygments==2.20.0
