@@ -1,5 +1,9 @@
 .DEFAULT_GOAL := dev
 
+# ============================================================
+# Docker Compose (local dev without K8s)
+# ============================================================
+
 dev: .env
 	docker compose up --build -d
 
@@ -21,9 +25,6 @@ logs:
 ps:
 	docker compose ps
 
-test:
-	. venv/bin/activate && python3 -m pytest backend/tests/ -q --tb=short
-
 .env:
 	cp docker/.env.example .env
 
@@ -33,16 +34,19 @@ test:
 .env.production:
 	cp docker/.env.example .env.production
 
-# === K8s targets ===
+# ============================================================
+# Python (local dev)
+# ============================================================
+
+test:
+	. venv/bin/activate && python3 -m pytest backend/tests/ -q --tb=short
+
+# ============================================================
+# K8s — Cluster lifecycle
+# ============================================================
 
 CLUSTER := local-ccs-cluster
-NS != kubectl get ns -o name 2>/dev/null | sed 's|namespace/||' | grep -vE '^(kube-system|kube-public|kube-node-lease|default|ingress-nginx|cnpg-system|monitoring)$$' || true
-
 IMAGE_TAG ?= latest
-
-# ============================================================
-# Cluster lifecycle
-# ============================================================
 
 minikube-start:
 	minikube start --cpus 4 --memory 6144 --driver docker -p $(CLUSTER)
@@ -53,16 +57,28 @@ minikube-tunnel:
 minikube-delete:
 	minikube delete -p $(CLUSTER)
 
+# Full cluster setup: prerequisites + cluster + namespace + images
+k8s-setup:
+	./k8s/setup.sh all
+
+all: k8s-setup
+
+# Add a worker node (Docker Desktop — Flannel CNI, may break DNS)
+minikube-add-node:
+	./k8s/setup.sh nodes
+
+# Blow everything away and start fresh
 k8s-clean:
 	@echo "Deleting all objects in user namespaces..."
-	@if [ -n "$(NS)" ]; then \
-		for ns in $(NS); do \
+	@NS=$$(kubectl get ns -o name 2>/dev/null | sed 's|namespace/||' | grep -vE '^(kube-system|kube-public|kube-node-lease|default|ingress-nginx|cnpg-system|monitoring)$$' || true); \
+	if [ -n "$$NS" ]; then \
+		for ns in $$NS; do \
 			echo "  namespace: $$ns"; \
 			kubectl delete all --all -n $$ns --ignore-not-found=true; \
 			kubectl delete ingress,pvc,configmap,secret,job,cronjob,serviceaccount --all -n $$ns --ignore-not-found=true; \
 		done; \
 		echo "  deleting namespaces..."; \
-		echo "$(NS)" | xargs -n1 kubectl delete ns --ignore-not-found=true; \
+		echo "$$NS" | xargs -n1 kubectl delete ns --ignore-not-found=true; \
 	fi
 	@echo "Tearing down minikube..."
 	minikube delete -p $(CLUSTER)
@@ -70,27 +86,27 @@ k8s-clean:
 k8s-reset: k8s-clean
 	minikube start --cpus 4 --memory 6144 --driver docker -p $(CLUSTER)
 
-k8s-setup:
-	./k8s/setup.sh all
-
-all: k8s-setup
-
 # ============================================================
-# Docker images (build locally, load into minikube nodes)
+# K8s — Docker images (build locally, load into minikube)
 # ============================================================
+
+# Note: minikube image load --daemon silently fails to update existing :latest tags.
+# Always remove the old image first via SSH.
 
 docker-build-backend:
 	docker build -t ccs-backend:$(IMAGE_TAG) -f docker/Dockerfile.backend .
-	minikube image load ccs-backend:$(IMAGE_TAG) --daemon -p $(CLUSTER)
+	minikube ssh -p $(CLUSTER) "docker rmi -f ccs-backend:$(IMAGE_TAG)" 2>/dev/null || true
+	minikube image load ccs-backend:$(IMAGE_TAG) -p $(CLUSTER)
 
 docker-build-frontend:
 	docker build -t ccs-frontend:$(IMAGE_TAG) -f docker/Dockerfile.frontend .
-	minikube image load ccs-frontend:$(IMAGE_TAG) --daemon -p $(CLUSTER)
+	minikube ssh -p $(CLUSTER) "docker rmi -f ccs-frontend:$(IMAGE_TAG)" 2>/dev/null || true
+	minikube image load ccs-frontend:$(IMAGE_TAG) -p $(CLUSTER)
 
 docker-build-all: docker-build-backend docker-build-frontend
 
 # ============================================================
-# Helm
+# K8s — Helm
 # ============================================================
 
 helm-dep:
@@ -100,18 +116,35 @@ helm-lint:
 	helm lint helm/ccs/ -f helm/ccs/values.yaml
 
 helm-deploy:
-	helm upgrade --install ccs ./helm/ccs -f helm/ccs/values.yaml -n ccs-dev --create-namespace
+	helm upgrade --install ccs ./helm/ccs -f helm/ccs/values.yaml -n ccs-dev --create-namespace --timeout 15m
 
 helm-delete:
 	helm uninstall ccs -n ccs-dev
 
 k8s-deploy: helm-dep helm-deploy
 
-minikube-add-node:
-	./k8s/setup.sh nodes
+# ============================================================
+# K8s — Monitoring CRDs (must be installed before kube-prometheus-stack)
+# ============================================================
 
-.PHONY: dev sandbox prod stop down logs ps test \
-	minikube-start minikube-tunnel minikube-delete \
-	k8s-clean k8s-reset k8s-setup all minikube-add-node \
+k8s-crds:
+	@echo "Installing Prometheus Operator CRDs..."
+	@tar -xzf helm/ccs/charts/kube-prometheus-stack-86.2.3.tgz -C /tmp/ 2>/dev/null || true
+	kubectl apply --server-side -f /tmp/kube-prometheus-stack/charts/crds/crds/ 2>/dev/null || true
+
+# ============================================================
+# K8s — Full deployment pipeline
+# ============================================================
+
+# Full pipeline: images → CRDs → helm dep → helm deploy
+k8s: docker-build-all k8s-crds helm-dep helm-deploy
+
+# Fast path: re-deploy Helm only (no image rebuild)
+k8s-quick: k8s-crds helm-dep helm-deploy
+
+.PHONY: dev sandbox prod stop down logs ps test .env .env.sandbox .env.production \
+	minikube-start minikube-tunnel minikube-delete k8s-setup all minikube-add-node \
+	k8s-clean k8s-reset \
 	docker-build-backend docker-build-frontend docker-build-all \
-	helm-dep helm-lint helm-deploy helm-delete k8s-deploy
+	helm-dep helm-lint helm-deploy helm-delete k8s-deploy \
+	k8s-crds k8s k8s-quick

@@ -575,42 +575,29 @@ helm/ccs/charts/frontend/
 
 ## Phase 8 — Makefile Targets
 
-- [x] Added to root `Makefile`:
+- [x] Makefile organized into sections:
+  - Docker Compose (local dev)
+  - Python (tests)
+  - Cluster lifecycle (start/stop/tunnel/clean/reset)
+  - Docker images (build + load into minikube — fixed `--daemon` bug with SSH rmi)
+  - Helm (dep/lint/deploy/delete)
+  - Monitoring CRDs (`k8s-crds` — server-side apply)
+  - Deployment pipelines (`k8s` full, `k8s-quick` helm-only)
 
-```makefile
-CLUSTER := local-ccs-cluster
-IMAGE_TAG ?= latest
+- [x] package.json cleaned up:
+  - Removed stale `k8s:helm-*` and `k8s:setup` scripts (delegate to Make)
+  - Added `k8s` (full pipeline), `k8s:quick` (helm-only), `k8s:crds`
+  - Kept `k8s:images`, `k8s:deploy`, `k8s:start`, `k8s:tunnel`
 
-minikube-start:
-	minikube start --cpus 4 --memory 6144 --driver docker -p $(CLUSTER)
+**Workflow:**
 
-minikube-tunnel:
-	minikube tunnel -p $(CLUSTER)
-
-minikube-delete:
-	minikube delete -p $(CLUSTER)
-
-k8s-clean:   # delete user ns + cluster
-k8s-reset:   # clean + restart cluster
-k8s-setup:   # run setup.sh (prereqs + cluster + images)
-
-docker-build-backend:  # docker build + minikube image load
-docker-build-frontend: # docker build + minikube image load
-docker-build-all:      # both images
-
-helm-dep:    # helm dependency update helm/ccs/
-helm-lint:   # helm lint
-helm-deploy: # helm upgrade --install
-helm-delete: # helm uninstall
-
-k8s-deploy: helm-dep helm-deploy  # full deploy (images built separately)
+```bash
+npm run k8s              # build images → CRDs → helm dep → deploy (full pipeline)
+npm run k8s:quick        # CRDs → helm dep → deploy (no image rebuild)
+npm run k8s:images       # build + load images only
+npm run k8s:start        # minikube start
+npm run k8s:tunnel       # minikube tunnel (needs sudo, separate terminal)
 ```
-
-> **Check:**
-> ```bash
-> make -n k8s-clean 2>&1 | head -3 && echo "..." && make -n k8s-deploy 2>&1 | head -3
-> grep -q 'k8s-clean\|k8s-deploy' Makefile && echo "Targets present in Makefile" || echo "Missing targets"
-> ```
 
 ---
 
