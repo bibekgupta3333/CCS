@@ -1,0 +1,239 @@
+# ============================================================
+# CCS Umbrella Chart — dev values (minikube)
+# ============================================================
+
+# --- Backend subchart ---
+backend:
+  image:
+    repository: ccs-backend
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicas: 1
+  resources:
+    requests:
+      cpu: 256m
+      memory: 512Mi
+    limits:
+      cpu: 512m
+      memory: 1Gi
+  logLevel: INFO
+  database:
+    host: ccs-postgresql
+    port: 5432
+    username: ccs
+    password: ccs_password
+    name: ccs_db
+  serviceMonitor:
+    enabled: true
+
+# --- Frontend subchart ---
+frontend:
+  image:
+    repository: ccs-frontend
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicas: 1
+  resources:
+    requests:
+      cpu: 256m
+      memory: 512Mi
+    limits:
+      cpu: 512m
+      memory: 1Gi
+
+# --- Ingress ---
+ingress:
+  enabled: true
+  hosts:
+    api: api.ccs.local
+    app: app.ccs.local
+
+# --- PostgreSQL (Bitnami subchart) ---
+postgresql:
+  enabled: true
+  fullnameOverride: ccs-postgresql
+  auth:
+    username: ccs
+    password: ccs_password
+    database: ccs_db
+  volumePermissions:
+    enabled: true
+  primary:
+    persistence:
+      size: 5Gi
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+    podSecurityContext:
+      fsGroup: 1001
+      fsGroupChangePolicy: Always
+    containerSecurityContext:
+      runAsUser: 1001
+      runAsGroup: 1001
+    affinity:
+      nodeAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+                - key: node-role.kubernetes.io/control-plane
+                  operator: DoesNotExist
+
+# --- Ingress-Nginx controller ---
+ingress-nginx:
+  enabled: true
+  controller:
+    service:
+      type: LoadBalancer  # minikube tunnel → 127.0.0.1:80
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+
+# --- Optional (disabled for dev) ---
+redis:
+  enabled: true
+  fullnameOverride: ccs-redis
+  image:
+    registry: docker.io
+    repository: redis
+    tag: "7.4"
+    pullPolicy: IfNotPresent
+  volumePermissions:
+    enabled: false
+  metrics:
+    enabled: false
+  commonConfiguration: |
+    maxmemory 100mb
+    maxmemory-policy allkeys-lru
+  auth:
+    enabled: false
+  replica:
+    replicaCount: 0
+
+monitoring:
+  enabled: true
+
+kube-prometheus-stack:
+  alertmanager:
+    enabled: false
+  prometheus:
+    prometheusSpec:
+      replicas: 1
+      resources:
+        requests:
+          cpu: 200m
+          memory: 512Mi
+        limits:
+          cpu: 500m
+          memory: 1Gi
+      retention: 1d
+      retentionSize: 5GB
+      storageSpec:
+        disableMountSubPath: true
+      scrapeInterval: 30s
+      evaluationInterval: 30s
+  grafana:
+    enabled: true
+    forceDeployDatasources: true
+    forceDeployDashboards: true
+    adminPassword: admin
+    persistence:
+      enabled: false
+    additionalDataSources:
+      - name: Loki
+        type: loki
+        url: http://ccs-loki-gateway:80
+        access: proxy
+        isDefault: false
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+    ingress:
+      enabled: false
+    service:
+      port: 3000
+  kubeStateMetrics:
+    enabled: true
+  nodeExporter:
+    enabled: true
+  prometheusOperator:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
+
+# --- Loki + Promtail ---
+loki:
+  enabled: true
+  fullnameOverride: ccs-loki
+  deploymentMode: SingleBinary
+  loki:
+    auth_enabled: false
+    storage:
+      type: filesystem
+    commonConfig:
+      replication_factor: 1
+    schemaConfig:
+      configs:
+        - from: "2024-04-01"
+          store: tsdb
+          object_store: filesystem
+          schema: v13
+          index:
+            prefix: index_
+            period: 24h
+  lokiCanary:
+    enabled: false
+  write:
+    replicas: 0
+  read:
+    replicas: 0
+  backend:
+    replicas: 0
+  chunksCache:
+    enabled: false
+  resultsCache:
+    enabled: false
+  persistence:
+    enabled: true
+    size: 5Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 200m
+      memory: 512Mi
+  gateway:
+    enabled: true
+  test:
+    enabled: false
+
+promtail:
+  enabled: true
+  fullnameOverride: ccs-promtail
+  config:
+    clients:
+      - url: http://ccs-loki-gateway:80/loki/api/v1/push
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi

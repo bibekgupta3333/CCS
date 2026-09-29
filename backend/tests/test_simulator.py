@@ -16,7 +16,10 @@ class TestDataLoading:
 
     def test_schedule_columns(self, simulator: CCSSimulator):
         sched = simulator.get_schedule("CCS-A")
-        assert list(sched.columns) == ["case_id", "date", "co2_injected_tonnes", "month"]
+        assert isinstance(sched, list)
+        assert len(sched) > 0
+        for key in ("case_id", "date", "co2_injected_tonnes", "month"):
+            assert key in sched[0]
 
     def test_preset_returns_all_fields(self, simulator: CCSSimulator):
         preset = simulator.get_preset("CCS-A")
@@ -82,7 +85,7 @@ class TestSimulationBasics:
         schedule = simulator.get_schedule("CCS-A")
         manual_cum = 0.0
         for i, s in enumerate(trace):
-            manual_cum += float(schedule.iloc[i]["co2_injected_tonnes"])
+            manual_cum += float(schedule[i]["co2_injected_tonnes"])
             assert abs(s["co2_cumulative"] - manual_cum) < 1.0
 
     def test_plume_radius_grows(self, simulator: CCSSimulator):
@@ -245,7 +248,7 @@ class TestNoise:
         trace = simulator.run_sync(cfg)
         schedule = simulator.get_schedule("CCS-A")
         for i, s in enumerate(trace):
-            expected = float(schedule.iloc[i]["co2_injected_tonnes"])
+            expected = float(schedule[i]["co2_injected_tonnes"])
             assert s["co2_injected"] == pytest.approx(expected, rel=0.01)
 
 

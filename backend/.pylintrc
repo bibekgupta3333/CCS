@@ -1,0 +1,33 @@
+[MASTER]
+jobs=0
+load-plugins=pylint.extensions.docparams
+
+[MESSAGES CONTROL]
+disable=
+    missing-module-docstring,
+    missing-class-docstring,
+    missing-function-docstring,
+    too-few-public-methods,
+    too-many-instance-attributes,
+    too-many-locals,
+    too-many-arguments,
+    too-many-positional-arguments,
+    too-many-ancestors,
+    import-outside-toplevel,
+    protected-access,
+    unused-argument,
+    broad-exception-caught,
+    consider-using-from-import,
+    use-implicit-booleaness-not-comparison,
+    wrong-import-order,
+    wrong-import-position,
+    duplicate-code,
+    redefined-outer-name,
+    invalid-name,
+    global-statement,
+
+[REPORTS]
+score=yes
+
+[FORMAT]
+max-line-length=120

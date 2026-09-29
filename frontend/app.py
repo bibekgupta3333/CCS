@@ -2,6 +2,7 @@ import asyncio
 import base64
 import io
 import json
+import os
 import queue
 import threading
 from datetime import datetime, timezone
@@ -14,8 +15,8 @@ import requests
 import websockets
 from dash import Input, Output, State, callback, ctx, dcc, html, no_update
 
-BACKEND = "http://localhost:8000"
-WS_URL = "ws://localhost:8000"
+BACKEND = os.getenv("BACKEND_URL", "http://localhost:8000")
+WS_URL = BACKEND.replace("http://", "ws://").replace("https://", "wss://")
 
 PRESSURE_SAFE = 1.15
 PRESSURE_WARN = 1.30
@@ -189,6 +190,11 @@ def _help(text: str) -> html.Div:
 
 app = dash.Dash(__name__, suppress_callback_exceptions=True)
 app.title = "CCS Realtime Injection Simulator"
+
+
+@app.server.route("/health")
+def frontend_health():
+    return {"status": "ok"}
 
 app.layout = html.Div(
     style=dict(
@@ -445,15 +451,18 @@ app.layout = html.Div(
     Input("case-selector", "id"),
 )
 def load_case_options(_):
-    presets = fetch_json("/presets")
-    options = [
-        {
-            "label": f"{p['case_id']} — {p['reservoir_type']} ({p['p_init_MPa']:.1f} MPa)",
-            "value": p["case_id"],
-        }
-        for p in presets
-    ]
-    return options, options[0]["value"] if options else None
+    try:
+        presets = fetch_json("/presets")
+        options = [
+            {
+                "label": f"{p['case_id']} — {p['reservoir_type']} ({p['p_init_MPa']:.1f} MPa)",
+                "value": p["case_id"],
+            }
+            for p in presets
+        ]
+        return options, options[0]["value"] if options else None
+    except Exception:
+        return [], None
 
 
 # ---------------------------------------------------------------
