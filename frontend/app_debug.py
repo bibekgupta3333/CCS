@@ -3,6 +3,8 @@ import base64
 import io
 import json
 import os
+import queue
+import threading
 from datetime import datetime, timezone
 
 import dash
@@ -12,24 +14,6 @@ import plotly.graph_objects as go
 import requests
 import websockets
 from dash import Input, Output, State, callback, ctx, dcc, html, no_update
-
-# ---------------------------------------------------------------
-# Monkey-patch Dash 4.x: fix legacy path where split_callback_id
-# result is not assigned to g.outputs_list, causing 500 errors
-# on callbacks without an explicit "outputs" field in the body.
-# ---------------------------------------------------------------
-import dash.dash as _dash_module
-from dash._utils import split_callback_id as _split_cb_id
-
-_orig_prepare = _dash_module.Dash._prepare_callback
-
-def _patched_prepare(self, g, body):
-    result = _orig_prepare(self, g, body)
-    if not g.outputs_list:
-        g.outputs_list = _split_cb_id(body["output"])
-    return result
-
-_dash_module.Dash._prepare_callback = _patched_prepare
 
 BACKEND = os.getenv("BACKEND_URL", "http://localhost:8000")
 WS_URL = BACKEND.replace("http://", "ws://").replace("https://", "wss://")
@@ -50,34 +34,51 @@ COLOR_WHITE = "#ffffff"
 COLOR_HELP = "#64748b"
 
 
-def run_simulation(case_id: str, config: dict) -> tuple[list, dict | None, str | None]:
-    """Synchronous simulation via WebSocket. Returns (trace, summary, error_msg)."""
+class SimulationStream:
+    """Background-thread WebSocket client. Thread-safe message queue."""
 
-    async def _connect():
+    def __init__(self):
+        self._q: queue.Queue = queue.Queue()
+        self._thread: threading.Thread | None = None
+        self._active = False
+
+    @property
+    def active(self) -> bool:
+        return self._active
+
+    def start(self, case_id: str, config: dict):
+        self._q = queue.Queue()
+        self._active = True
+        self._thread = threading.Thread(target=self._run, args=(case_id, config), daemon=True)
+        self._thread.start()
+
+    def _run(self, case_id: str, config: dict):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(self._connect(case_id, config))
+
+    async def _connect(self, case_id: str, config: dict):
         try:
             async with websockets.connect(f"{WS_URL}/ws/simulate/{case_id}") as ws:
                 await ws.send(json.dumps(config))
-                trace: list[dict] = []
                 async for raw in ws:
-                    msg = json.loads(raw)
-                    if msg["type"] == "tick":
-                        trace.append(msg["state"])
-                    elif msg["type"] == "done":
-                        return trace, msg.get("summary"), None
-                    elif msg["type"] == "error":
-                        return trace, None, msg.get("detail", "Simulation error")
-                return trace, None, "Connection closed without completion"
-        except websockets.exceptions.ConnectionClosedOK:
-            return [], None, None
+                    self._q.put(json.loads(raw))
         except Exception as exc:
-            return [], None, str(exc)
+            self._q.put({"type": "error", "detail": str(exc)})
+        finally:
+            self._active = False
 
-    try:
-        return asyncio.run(_connect())
-    except Exception as exc:
-        return [], None, f"Simulation error: {exc}"
+    def drain(self) -> list[dict]:
+        msgs = []
+        while not self._q.empty():
+            try:
+                msgs.append(self._q.get_nowait())
+            except queue.Empty:
+                break
+        return msgs
 
 
+stream = SimulationStream()
 _prev_trace_cache: list[dict] | None = None
 
 
@@ -375,27 +376,7 @@ app.layout = html.Div(
                     ]
                 ),
 
-                html.Div(id="post-sim-controls", style=dict(display="none")),
-        html.Div(
-            [
-                html.Button("Compare with Previous Run", id="btn-compare", style=dict(
-                    width="100%", padding="8px", fontSize="13px", fontWeight="600",
-                    border="1px solid", borderColor=COLOR_BORDER, borderRadius="6px", cursor="pointer",
-                    background=COLOR_BG, color=COLOR_TEXT, marginBottom="8px",
-                )),
-                html.Button("Export CSV", id="btn-export", style=dict(
-                    width="100%", padding="8px", fontSize="13px", fontWeight="600",
-                    border="1px solid", borderColor=COLOR_BORDER, borderRadius="6px", cursor="pointer",
-                    background=COLOR_BG, color=COLOR_TEXT, marginBottom="8px",
-                )),
-                html.Button("Reset", id="btn-reset", style=dict(
-                    width="100%", padding="8px", fontSize="13px", fontWeight="600", border="none",
-                    borderRadius="6px", cursor="pointer", background="#1e293b", color=COLOR_MUTED,
-                    display="none",
-                )),
-            ],
-            style=dict(display="none"),
-        ),
+                html.Div(id="post-sim-controls"),
 
                 html.Div(id="summary-panel"),
             ],
@@ -471,8 +452,7 @@ app.layout = html.Div(
         dcc.Store(id="store-preset", data={}),
         dcc.Store(id="store-alerts", data=[]),
         dcc.Store(id="store-completed", data=False),
-        dcc.Store(id="store-animation-index", data=0),
-        dcc.Interval(id="anim-tick", interval=120, disabled=True),
+        dcc.Interval(id="tick", interval=150, disabled=True),
     ],
 )
 
@@ -535,18 +515,148 @@ def show_preset(case_id: str):
 
 
 # ---------------------------------------------------------------
-# chart builder helpers
+# callbacks — start / stop simulation
 # ---------------------------------------------------------------
 
 
-def build_pressure_chart(days, pressure, p_init, leak_flags):
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
+@app.callback(
+    Output("store-trace", "data"),
+    Output("store-running", "data"),
+    Output("store-alerts", "data", allow_duplicate=True),
+    Output("store-completed", "data"),
+    Output("store-prev-trace", "data", allow_duplicate=True),
+    Output("tick", "disabled", allow_duplicate=True),
+    Output("start-btn", "disabled", allow_duplicate=True),
+    Output("status-indicator", "children", allow_duplicate=True),
+    Output("status-indicator", "style", allow_duplicate=True),
+    Input("start-btn", "n_clicks"),
+    State("case-selector", "value"),
+    State("rate-slider", "value"),
+    State("duration-slider", "value"),
+    State("leak-slider", "value"),
+    State("store-running", "data"),
+    prevent_initial_call=True,
+)
+def start_simulation(n_clicks, case_id, rate, days, leak_pct, running):
+    if running:
+        return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
+
+    config = {
+        "days": days,
+        "injection_rate_multiplier": rate,
+        "leak_probability": leak_pct,
+        "speed_multiplier": 8.0,
+    }
+
+    stream.start(case_id, config)
+
+    status_style = dict(textAlign="center", fontSize="12px", fontWeight="600", marginTop="8px")
+
+    return (
+        [],
+        True,
+        [],
+        False,
+        no_update,
+        False,
+        True,
+        html.Span("RUNNING — streaming live data...", style={**status_style, "color": COLOR_ACCENT}),
+        status_style,
+    )
+
+
+# ---------------------------------------------------------------
+# callbacks — tick (main update loop)
+# ---------------------------------------------------------------
+
+
+@app.callback(
+    Output("store-trace", "data", allow_duplicate=True),
+    Output("store-running", "data", allow_duplicate=True),
+    Output("store-alerts", "data", allow_duplicate=True),
+    Output("store-completed", "data", allow_duplicate=True),
+    Output("store-prev-trace", "data", allow_duplicate=True),
+    Output("tick", "disabled", allow_duplicate=True),
+    Output("start-btn", "disabled", allow_duplicate=True),
+    Output("status-indicator", "children", allow_duplicate=True),
+    Output("status-indicator", "style", allow_duplicate=True),
+    Output("chart-pressure", "figure", allow_duplicate=True),
+    Output("chart-injection", "figure", allow_duplicate=True),
+    Output("chart-gauge", "figure", allow_duplicate=True),
+    Output("chart-cumulative", "figure", allow_duplicate=True),
+    Output("chart-heatmap", "figure", allow_duplicate=True),
+    Output("alert-list", "children", allow_duplicate=True),
+    Output("summary-panel", "children", allow_duplicate=True),
+    Input("tick", "n_intervals"),
+    State("store-trace", "data"),
+    State("store-running", "data"),
+    State("store-alerts", "data"),
+    State("store-completed", "data"),
+    State("store-prev-trace", "data"),
+    State("store-preset", "data"),
+    prevent_initial_call=True,
+)
+def tick_update(_n, trace_data, running, alerts, completed, prev_trace, preset):
+    if not running:
+        return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
+
+    msgs = stream.drain()
+    if not msgs:
+        return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
+
+    p_init = preset.get("p_init_MPa", 20.0)
+    rng = np.random.default_rng()
+    new_alerts = list(alerts)
+
+    for msg in msgs:
+        if msg["type"] == "tick":
+            trace_data.append(msg["state"])
+            s = msg["state"]
+            if s.get("leak_kg", 0) > 0:
+                new_alerts.append(dict(
+                    day=s["day"], text=f"LEAK: {s['leak_kg']:,.0f} kg detected at day {s['day']}", level="leak",
+                ))
+            zone, _ = _pressure_zone(s["pressure_MPa"], p_init)
+            if zone in ("CRITICAL", "WARNING"):
+                key = f"pressure-day-{s['day']}"
+                if not any(a.get("key") == key for a in new_alerts):
+                    new_alerts.append(dict(
+                        day=s["day"], text=f"{zone}: {s['pressure_MPa']:.1f} MPa at day {s['day']}", level=zone.lower(), key=key,
+                    ))
+        elif msg["type"] == "done":
+            summary = msg.get("summary", {})
+            completed = True
+            running = False
+            prev_trace = list(trace_data)
+        elif msg["type"] == "error":
+            running = False
+            return (
+                trace_data, False, alerts, False, prev_trace, True, False,
+                html.Span(f"ERROR: {msg['detail']}", style=dict(color=COLOR_CRIT, fontSize="12px", textAlign="center")),
+                dict(textAlign="center", fontSize="12px", fontWeight="600", marginTop="8px"),
+                no_update, no_update, no_update, no_update, no_update, no_update, no_update,
+            )
+
+    alerts = new_alerts
+    summary = msg.get("summary", {}) if msgs and msgs[-1].get("type") == "done" else None
+
+    # --- build figures ---
+    df = pd.DataFrame(trace_data)
+    days = df["day"].values
+    pressure = df["pressure_MPa"].values
+    injected = df["co2_injected"].values
+    cumulative = df["co2_cumulative"].values
+    plume = df["plume_radius_m"].values
+    leak_flags = df["leak_kg"].values > 0
+
+    # Pressure chart
+    fig_p = go.Figure()
+    fig_p.add_trace(go.Scatter(
         x=days, y=pressure, mode="lines+markers", line=dict(color=COLOR_ACCENT, width=2),
         marker=dict(size=2), name="Pressure",
     ))
     if any(leak_flags):
-        fig.add_trace(go.Scatter(
+        fig_p.add_trace(go.Scatter(
             x=days[leak_flags], y=pressure[leak_flags],
             mode="markers", marker=dict(color=COLOR_CRIT, size=8, symbol="x"), name="Leak",
         ))
@@ -556,39 +666,36 @@ def build_pressure_chart(days, pressure, p_init, leak_flags):
         ("Warn", p_init * PRESSURE_WARN, COLOR_WARN),
         ("Crit", p_init * PRESSURE_CRIT, COLOR_CRIT),
     ]:
-        fig.add_hline(y=y_val, line_dash="dot", line_color=color, opacity=0.4,
-                      annotation_text=label, annotation_position="top right",
-                      annotation_font=dict(size=9, color=color))
-    fig.update_layout(
+        fig_p.add_hline(y=y_val, line_dash="dot", line_color=color, opacity=0.4,
+                        annotation_text=label, annotation_position="top right",
+                        annotation_font=dict(size=9, color=color))
+    fig_p.update_layout(
         title=dict(text="<b>Reservoir Pressure</b> — As more CO₂ goes in, pressure goes up. Dotted lines show safety limits.", font=dict(size=12)),
         paper_bgcolor=COLOR_SURFACE, plot_bgcolor=COLOR_SURFACE,
         font_color=COLOR_TEXT, margin=dict(l=40, r=10, t=40, b=20),
         legend=dict(orientation="h", y=1.12, font=dict(size=11)),
     )
-    _axis_style(fig, "Day", "Pressure (MPa)")
-    return fig
+    _axis_style(fig_p, "Day", "Pressure (MPa)")
 
-
-def build_injection_chart(days, injected):
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
+    # Injection chart
+    fig_i = go.Figure()
+    fig_i.add_trace(go.Bar(
         x=days, y=injected, marker_color=COLOR_ACCENT, marker_line_width=0, name="Daily Injection",
     ))
-    fig.update_layout(
+    fig_i.update_layout(
         title=dict(text="<b>CO₂ Injected Per Day</b> — How many tonnes are pumped underground each day.", font=dict(size=12)),
         paper_bgcolor=COLOR_SURFACE, plot_bgcolor=COLOR_SURFACE,
         font_color=COLOR_TEXT, margin=dict(l=40, r=10, t=40, b=20),
     )
-    _axis_style(fig, "Day", "Tonnes / Day")
-    return fig
+    _axis_style(fig_i, "Day", "Tonnes / Day")
 
-
-def build_gauge(pressure, p_init):
-    zone, zone_color = _pressure_zone(pressure, p_init)
-    gauge_max = max(p_init * PRESSURE_CRIT * 1.2, pressure * 1.3, 10)
-    fig = go.Figure(go.Indicator(
+    # Gauge
+    latest_p = pressure[-1] if len(pressure) > 0 else 0
+    zone, zone_color = _pressure_zone(latest_p, p_init)
+    gauge_max = max(p_init * PRESSURE_CRIT * 1.2, latest_p * 1.3, 10)
+    fig_g = go.Figure(go.Indicator(
         mode="gauge+number+delta",
-        value=pressure,
+        value=latest_p,
         number=dict(suffix=" MPa", font=dict(size=28, color=COLOR_TEXT)),
         delta=dict(reference=p_init, increasing=dict(color=COLOR_WARN), decreasing=dict(color=COLOR_SAFE)),
         title=dict(text=f"<b>Current Pressure</b><br>{zone}", font=dict(size=12, color=zone_color)),
@@ -604,236 +711,82 @@ def build_gauge(pressure, p_init):
             ],
         ),
     ))
-    fig.update_layout(
+    fig_g.update_layout(
         paper_bgcolor=COLOR_SURFACE, font_color=COLOR_TEXT,
         margin=dict(l=20, r=20, t=50, b=10), height=340,
     )
-    return fig
 
-
-def build_cumulative_chart(days, cumulative):
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
+    # Cumulative scatter
+    fig_c = go.Figure()
+    fig_c.add_trace(go.Scatter(
         x=days, y=cumulative, mode="lines",
         fill="tozeroy", fillcolor="rgba(56,189,248,0.1)",
         line=dict(color=COLOR_ACCENT, width=2), name="Cumulative",
     ))
-    fig.update_layout(
+    fig_c.update_layout(
         title=dict(text="<b>Cumulative CO₂ Stored</b> — Running total of all CO₂ pumped in so far.", font=dict(size=12)),
         paper_bgcolor=COLOR_SURFACE, plot_bgcolor=COLOR_SURFACE,
         font_color=COLOR_TEXT, margin=dict(l=40, r=10, t=40, b=20),
     )
-    _axis_style(fig, "Day", "Tonnes")
-    return fig
+    _axis_style(fig_c, "Day", "Tonnes")
 
-
-def build_heatmap(pressure, plume_radius, rng):
-    grid = build_heatmap_grid(pressure, plume_radius, rng)
-    fig = go.Figure(go.Heatmap(
+    # Heatmap
+    latest_plume = plume[-1] if len(plume) > 0 else 50
+    grid = build_heatmap_grid(latest_p, latest_plume, rng)
+    fig_h = go.Figure(go.Heatmap(
         z=grid, colorscale="Viridis", showscale=True,
         colorbar=dict(title="MPa", title_font_color=COLOR_TEXT, tickcolor=COLOR_TEXT),
     ))
-    fig.update_layout(
-        title=dict(text=f"<b>Underground Pressure Map</b> — How pressure spreads from the injection well outward. Plume radius = {plume_radius:.0f} meters", font=dict(size=12)),
+    fig_h.update_layout(
+        title=dict(text=f"<b>Underground Pressure Map</b> — How pressure spreads from the injection well outward. Plume radius = {latest_plume:.0f} meters", font=dict(size=12)),
         paper_bgcolor=COLOR_SURFACE, plot_bgcolor=COLOR_SURFACE,
         font_color=COLOR_TEXT, margin=dict(l=10, r=50, t=40, b=10),
         xaxis=dict(showticklabels=False, showgrid=False, title="Grid X", title_font_color=COLOR_MUTED),
         yaxis=dict(showticklabels=False, showgrid=False, title="Grid Y", title_font_color=COLOR_MUTED),
     )
-    return fig
 
-
-# ---------------------------------------------------------------
-# callbacks — start / stop simulation
-# ---------------------------------------------------------------
-
-
-@app.callback(
-    Output("store-trace", "data"),
-    Output("store-running", "data"),
-    Output("store-alerts", "data", allow_duplicate=True),
-    Output("store-animation-index", "data"),
-    Output("anim-tick", "disabled"),
-    Output("store-completed", "data"),
-    Output("store-prev-trace", "data", allow_duplicate=True),
-    Output("start-btn", "disabled", allow_duplicate=True),
-    Output("status-indicator", "children", allow_duplicate=True),
-    Output("status-indicator", "style", allow_duplicate=True),
-    Output("chart-pressure", "figure", allow_duplicate=True),
-    Output("chart-injection", "figure", allow_duplicate=True),
-    Output("chart-gauge", "figure", allow_duplicate=True),
-    Output("chart-cumulative", "figure", allow_duplicate=True),
-    Output("chart-heatmap", "figure", allow_duplicate=True),
-    Output("alert-list", "children", allow_duplicate=True),
-    Output("summary-panel", "children", allow_duplicate=True),
-    Output("post-sim-controls", "style", allow_duplicate=True),
-    Input("start-btn", "n_clicks"),
-    State("case-selector", "value"),
-    State("rate-slider", "value"),
-    State("duration-slider", "value"),
-    State("leak-slider", "value"),
-    State("store-preset", "data"),
-    prevent_initial_call=True,
-)
-def start_simulation(n_clicks, case_id, rate, days, leak_pct, preset):
-    config = {
-        "days": days,
-        "injection_rate_multiplier": rate,
-        "leak_probability": leak_pct,
-        "speed_multiplier": 8.0,
-    }
-
-    trace_data, summary, error = run_simulation(case_id, config)
-
-    p_init = preset.get("p_init_MPa", 20.0)
-    status_style = dict(textAlign="center", fontSize="12px", fontWeight="600", marginTop="8px")
-
-    if error:
-        return (
-            trace_data, False, [], 0, True, False, [],
-            True,
-            html.Span(f"ERROR: {error}", style=dict(color=COLOR_CRIT, fontSize="12px", textAlign="center")),
-            status_style,
-            *((no_update,) * 7),
-            {"display": "none"},
-    )
-
-    completed = False
-    prev_trace = []
-    alerts = _collect_alerts(trace_data, p_init)
-    summary_panel = no_update
-
-    return (
-        trace_data, True, alerts, 0, False, False, prev_trace,
-        False,
-        html.Span("SIMULATING...", style={**status_style, "color": COLOR_ACCENT}),
-        status_style,
-        *((no_update,) * 7),
-        {"display": "none"},
-    )
-
-
-# ---------------------------------------------------------------
-# animation — step through trace data day by day
-# ---------------------------------------------------------------
-
-
-@app.callback(
-    Output("store-animation-index", "data", allow_duplicate=True),
-    Output("anim-tick", "disabled", allow_duplicate=True),
-    Output("store-completed", "data", allow_duplicate=True),
-    Output("status-indicator", "children", allow_duplicate=True),
-    Output("chart-pressure", "figure", allow_duplicate=True),
-    Output("chart-injection", "figure", allow_duplicate=True),
-    Output("chart-gauge", "figure", allow_duplicate=True),
-    Output("chart-cumulative", "figure", allow_duplicate=True),
-    Output("chart-heatmap", "figure", allow_duplicate=True),
-    Output("alert-list", "children", allow_duplicate=True),
-    Output("summary-panel", "children", allow_duplicate=True),
-    Output("post-sim-controls", "style", allow_duplicate=True),
-    Input("anim-tick", "n_intervals"),
-    State("store-trace", "data"),
-    State("store-animation-index", "data"),
-    State("store-preset", "data"),
-    prevent_initial_call=True,
-)
-def animate_step(_n, trace_data, idx, preset):
-    if not trace_data:
-        return no_update, no_update, no_update, no_update, *((no_update,) * 8)
-
-    total = len(trace_data)
-    next_idx = (idx or 0) + 1
-    p_init = preset.get("p_init_MPa", 20.0)
-    rng = np.random.default_rng()
-    status_style = dict(textAlign="center", fontSize="12px", fontWeight="600", marginTop="8px")
-
-    if next_idx >= total:
-        slice_data = trace_data
-        completed = True
-        status = html.Span("SIMULATION FINISHED — review results below", style={**status_style, "color": COLOR_SAFE})
-        tick_disabled = True
-        post_style = {"display": "block", "marginTop": "-6px"}
-        summary = no_update
-    else:
-        slice_data = trace_data[:next_idx]
-        completed = False
-        status = html.Span(f"SIMULATING day {slice_data[-1]['day']}/{total}...", style=dict(textAlign="center", fontSize="12px", fontWeight="600", marginTop="8px", color=COLOR_ACCENT))
-        tick_disabled = False
-        post_style = {"display": "none"}
-        summary = no_update
-
-    df = pd.DataFrame(slice_data)
-    days_a = df["day"].values
-    pressure = df["pressure_MPa"].values
-    injected = df["co2_injected"].values
-    cumulative = df["co2_cumulative"].values
-    plume = df["plume_radius_m"].values
-    leak_flags = df["leak_kg"].values > 0
-
-    fig_p = build_pressure_chart(days_a, pressure, p_init, leak_flags)
-    fig_i = build_injection_chart(days_a, injected)
-    latest_p = float(pressure[-1]) if len(pressure) > 0 else 0
-    fig_g = build_gauge(latest_p, p_init)
-    fig_c = build_cumulative_chart(days_a, cumulative)
-    latest_plume = float(plume[-1]) if len(plume) > 0 else 50
-    fig_h = build_heatmap(latest_p, latest_plume, rng)
-
-    alerts = _collect_alerts(slice_data, p_init)
-    alert_children = _build_alert_list(alerts)
-
-    return (
-        next_idx, tick_disabled, completed, status,
-        fig_p, fig_i, fig_g, fig_c, fig_h,
-        alert_children if alert_children else [html.Div("No issues detected yet.", style=dict(fontSize="12px", color=COLOR_HELP))],
-        summary,
-        post_style,
-    )
-
-
-def _collect_alerts(trace_data: list, p_init: float) -> list:
-    alerts = []
-    for s in trace_data:
-        if s.get("leak_kg", 0) > 0:
-            alerts.append(dict(
-                day=s["day"], text=f"LEAK: {s['leak_kg']:,.0f} kg detected at day {s['day']}", level="leak",
-            ))
-        zone, _ = _pressure_zone(s["pressure_MPa"], p_init)
-        if zone in ("CRITICAL", "WARNING"):
-            key = f"pressure-day-{s['day']}"
-            if not any(a.get("key") == key for a in alerts):
-                alerts.append(dict(
-                    day=s["day"], text=f"{zone}: {s['pressure_MPa']:.1f} MPa at day {s['day']}", level=zone.lower(), key=key,
-                ))
-    return alerts
-
-
-def _build_alert_list(alerts: list) -> list:
-    children = []
+    # Alert list
+    alert_children = []
     for a in reversed(alerts[-20:]):
         is_leak = a["level"] in ("leak", "critical")
         color = COLOR_CRIT if is_leak else COLOR_WARN
         icon = "🔴" if is_leak else "🟡"
-        children.append(html.Div(
+        alert_children.append(html.Div(
             [
                 html.Span(f"{icon} ", style=dict(fontSize="11px")),
                 html.Span(a["text"], style=dict(fontWeight="600" if is_leak else "400")),
             ],
             style=dict(padding="6px 0", borderBottom=f"1px solid {COLOR_BORDER}", fontSize="11px", lineHeight="1.5", color=COLOR_WHITE if is_leak else COLOR_TEXT),
         ))
-    return children
+    if not alert_children:
+        alert_children = [html.Div("No issues detected yet. Start a simulation to see alerts appear here if pressure gets too high or a leak occurs.", style=dict(fontSize="12px", color=COLOR_HELP, lineHeight="1.5"))]
 
+    # Summary panel
+    summary_panel = no_update
+    if completed and summary:
+        summary_panel = _card("Simulation Results", [
+            _stat("Days Simulated", str(summary["total_days"]), "days", "Total timesteps completed."),
+            _stat("Highest Pressure", f"{summary['max_pressure_MPa']:.2f}", "MPa", "Peak pressure reached during the run."),
+            _stat("Total CO₂ Stored", f"{summary['total_co2_injected_tonnes']:,.0f}", "tonnes", "Total amount of CO₂ pumped underground."),
+            _stat("Plume Spread", f"{summary['final_plume_radius_m']:.0f}", "meters", "How far CO₂ has spread from the injection well."),
+            _stat("Leak Events", str(summary["leak_event_count"]), "occurrences", "Number of days where a leak was detected."),
+            _stat("Average Daily", f"{summary['avg_daily_injection_tonnes']:,.0f}", "t/day", "Average tonnes injected per day."),
+        ])
 
-def _build_summary(summary: dict | None):
-    if not summary:
-        return no_update
-    return _card("Simulation Results", [
-        _stat("Days Simulated", str(summary["total_days"]), "days", "Total timesteps completed."),
-        _stat("Highest Pressure", f"{summary['max_pressure_MPa']:.2f}", "MPa", "Peak pressure reached during the run."),
-        _stat("Total CO₂ Stored", f"{summary['total_co2_injected_tonnes']:,.0f}", "tonnes", "Total amount of CO₂ pumped underground."),
-        _stat("Plume Spread", f"{summary['final_plume_radius_m']:.0f}", "meters", "How far CO₂ has spread from the injection well."),
-        _stat("Leak Events", str(summary["leak_event_count"]), "occurrences", "Number of days where a leak was detected."),
-        _stat("Average Daily", f"{summary['avg_daily_injection_tonnes']:,.0f}", "t/day", "Average tonnes injected per day."),
-    ])
+    status_style = dict(textAlign="center", fontSize="12px", fontWeight="600", marginTop="8px")
+    if completed:
+        status = html.Span("SIMULATION FINISHED — review results below", style={**status_style, "color": COLOR_SAFE})
+    else:
+        status = html.Span("RUNNING — streaming live data...", style={**status_style, "color": COLOR_ACCENT})
+
+    return (
+        trace_data, running, alerts, completed, prev_trace,
+        not running, not running,
+        status, status_style,
+        fig_p, fig_i, fig_g, fig_c, fig_h,
+        alert_children if alert_children else [html.Div("No issues detected yet.", style=dict(fontSize="12px", color=COLOR_HELP))],
+        summary_panel,
+    )
 
 
 # ---------------------------------------------------------------
@@ -842,15 +795,34 @@ def _build_summary(summary: dict | None):
 
 
 @app.callback(
-    Output("post-sim-controls", "style", allow_duplicate=True),
+    Output("post-sim-controls", "children"),
     Input("store-completed", "data"),
     Input("store-running", "data"),
-    prevent_initial_call=True,
 )
 def show_post_controls(completed, running):
-    if running or not completed:
-        return {"display": "none"}
-    return {"display": "block", "marginTop": "-6px"}
+    if running:
+        return html.Div("Charts updating... watch the dashboard on the right.", style=dict(fontSize="12px", color=COLOR_HELP, textAlign="center"))
+    if not completed:
+        return None
+    return html.Div(
+        [
+            html.Button("Compare with Previous Run", id="btn-compare", n_clicks=0, style=dict(
+                width="100%", padding="8px", fontSize="13px", fontWeight="600",
+                border="1px solid", borderColor=COLOR_BORDER, borderRadius="6px", cursor="pointer",
+                background=COLOR_BG, color=COLOR_TEXT, marginBottom="8px",
+            )),
+            html.Button("Export CSV", id="btn-export", n_clicks=0, style=dict(
+                width="100%", padding="8px", fontSize="13px", fontWeight="600",
+                border="1px solid", borderColor=COLOR_BORDER, borderRadius="6px", cursor="pointer",
+                background=COLOR_BG, color=COLOR_TEXT, marginBottom="8px",
+            )),
+            html.Button("Reset", id="btn-reset", n_clicks=0, style=dict(
+                width="100%", padding="8px", fontSize="13px", fontWeight="600", border="none",
+                borderRadius="6px", cursor="pointer", background="#1e293b", color=COLOR_MUTED,
+            )),
+        ],
+        style=dict(marginTop="-6px"),
+    )
 
 
 @app.callback(
@@ -944,6 +916,7 @@ def export_csv(_n, trace_data, preset):
     Output("store-alerts", "data", allow_duplicate=True),
     Output("store-completed", "data", allow_duplicate=True),
     Output("store-prev-trace", "data", allow_duplicate=True),
+    Output("tick", "disabled", allow_duplicate=True),
     Output("start-btn", "disabled", allow_duplicate=True),
     Output("status-indicator", "children", allow_duplicate=True),
     Output("status-indicator", "style", allow_duplicate=True),
@@ -954,7 +927,7 @@ def export_csv(_n, trace_data, preset):
     Output("chart-heatmap", "figure", allow_duplicate=True),
     Output("alert-list", "children", allow_duplicate=True),
     Output("summary-panel", "children", allow_duplicate=True),
-    Output("post-sim-controls", "style", allow_duplicate=True),
+    Output("post-sim-controls", "children", allow_duplicate=True),
     Input("btn-reset", "n_clicks"),
     prevent_initial_call=True,
 )
@@ -967,7 +940,7 @@ def reset_simulation(_n):
         "chart-heatmap": _empty_figure("Underground pressure spread map will appear here"),
     }
     return (
-        [], False, [], False, [], False,
+        [], False, [], False, [], True, False,
         html.Span("READY — adjust settings and click Start", style=dict(textAlign="center", fontSize="12px", fontWeight="600", color=COLOR_HELP)),
         dict(textAlign="center", fontSize="12px", fontWeight="600", marginTop="8px"),
         empty_figs["chart-pressure"],
@@ -977,7 +950,7 @@ def reset_simulation(_n):
         empty_figs["chart-heatmap"],
         html.Div("Start a simulation to monitor for leaks and pressure warnings.", style=dict(fontSize="12px", color=COLOR_HELP)),
         None,
-        {"display": "none"},
+        None,
     )
 
 
@@ -988,4 +961,3 @@ def reset_simulation(_n):
 if __name__ == "__main__":
     print("Frontend running at http://localhost:8050")
     app.run(host="0.0.0.0", port=8050, debug=False)
-# MARKER_BUILD_1783545813

@@ -27,7 +27,7 @@ dependencies:
   - name: kube-prometheus-stack
     version: 86.2.3
     repository: https://prometheus-community.github.io/helm-charts
-    condition: monitoring.enabled
+    condition: kube-prometheus-stack.enabled
   - name: loki
     version: 7.0.0
     repository: https://grafana.github.io/helm-charts
@@ -35,4 +35,4 @@ dependencies:
   - name: promtail
     version: 6.17.1
     repository: https://grafana.github.io/helm-charts
-    condition: loki.enabled
+    condition: promtail.enabled

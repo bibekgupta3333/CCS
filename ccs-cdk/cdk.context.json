@@ -1,0 +1,14 @@
+{
+  "availability-zones:account=743186642556:region=us-east-1": [
+    "us-east-1a",
+    "us-east-1b",
+    "us-east-1c",
+    "us-east-1d",
+    "us-east-1e",
+    "us-east-1f"
+  ],
+  "hosted-zone:account=743186642556:domainName=graph.bibekgupta.com:region=us-east-1": {
+    "Id": "/hostedzone/Z032572532KIS2X82FQ0Q",
+    "Name": "graph.bibekgupta.com."
+  }
+}

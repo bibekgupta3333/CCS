@@ -1,13 +1,21 @@
 # ============================================================
-# CCS Umbrella Chart — dev values (minikube)
+# CCS Umbrella Chart — DEV values (local / minikube)
 # ============================================================
+#
+# Usage:
+#   helm install ccs . -f values.yaml                    # dev (this file is the default)
+#   helm install ccs . -f values.yaml -f values-prod.yaml # prod (overrides below)
+#
+# For production EKS: use values-prod.yaml on top of this file.
+# It overrides images, ingress, and disables bundled postgresql/redis.
 
 # --- Backend subchart ---
 backend:
+  requireControlPlane: true             # minikube: schedule on control-plane node
   image:
-    repository: ccs-backend
+    repository: ccs-backend             # local image (no registry)
     tag: latest
-    pullPolicy: IfNotPresent
+    pullPolicy: IfNotPresent            # use cached local image
   replicas: 1
   resources:
     requests:
@@ -28,8 +36,9 @@ backend:
 
 # --- Frontend subchart ---
 frontend:
+  requireControlPlane: true             # minikube: schedule on control-plane node
   image:
-    repository: ccs-frontend
+    repository: ccs-frontend            # local image (no registry)
     tag: latest
     pullPolicy: IfNotPresent
   replicas: 1
@@ -41,14 +50,21 @@ frontend:
       cpu: 512m
       memory: 1Gi
 
-# --- Ingress ---
+# --- Ingress (nginx for dev; prod overrides to ALB) ---
 ingress:
   enabled: true
+  # className defaults to "nginx" in the template when not set
   hosts:
     api: api.ccs.local
     app: app.ccs.local
 
-# --- PostgreSQL (Bitnami subchart) ---
+# --- Seed Job (DB init + CSV ingestion) ---
+seedJob:
+  enabled: true
+
+# --- PostgreSQL — bundled Bitnami subchart (dev only) ---
+# In production EKS, PostgreSQL is deployed separately by CDK.
+# Set postgresql.enabled: false in values-prod.yaml.
 postgresql:
   enabled: true
   fullnameOverride: ccs-postgresql
@@ -83,12 +99,12 @@ postgresql:
                 - key: node-role.kubernetes.io/control-plane
                   operator: DoesNotExist
 
-# --- Ingress-Nginx controller ---
+# --- Ingress-Nginx controller (dev only; replaced by ALB in prod) ---
 ingress-nginx:
   enabled: true
   controller:
     service:
-      type: LoadBalancer  # minikube tunnel → 127.0.0.1:80
+      type: LoadBalancer              # minikube tunnel -> 127.0.0.1:80
     resources:
       requests:
         cpu: 100m
@@ -97,7 +113,9 @@ ingress-nginx:
         cpu: 200m
         memory: 256Mi
 
-# --- Optional (disabled for dev) ---
+# --- Redis — bundled Bitnami subchart (dev only) ---
+# In production EKS, Redis is deployed separately by CDK.
+# Set redis.enabled: false in values-prod.yaml.
 redis:
   enabled: true
   fullnameOverride: ccs-redis
@@ -118,10 +136,9 @@ redis:
   replica:
     replicaCount: 0
 
-monitoring:
-  enabled: true
-
+# --- Monitoring stack (both dev and prod) ---
 kube-prometheus-stack:
+  enabled: true
   alertmanager:
     enabled: false
   prometheus:
@@ -177,7 +194,7 @@ kube-prometheus-stack:
         cpu: 100m
         memory: 128Mi
 
-# --- Loki + Promtail ---
+# --- Loki + Promtail (both dev and prod) ---
 loki:
   enabled: true
   fullnameOverride: ccs-loki
