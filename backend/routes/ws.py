@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -54,4 +55,8 @@ async def ws_simulate(websocket: WebSocket, case_id: str):
         return
 
     summary = CCSSimulator.summarize(trace)
-    await websocket.send_json({"type": "done", "summary": summary})
+    try:
+        await websocket.send_json({"type": "done", "summary": summary})
+        await websocket.close(code=1000)
+    except Exception:
+        pass

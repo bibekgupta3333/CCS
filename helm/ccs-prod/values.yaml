@@ -1,0 +1,61 @@
+# ============================================================
+# CCS Umbrella Chart — PROD values (EKS, CDK-deployed)
+# ============================================================
+# This chart is used by the CDK at synth time only (helm template).
+# The rendered output is deployed via cluster.addManifest().
+# All subcharts that are deployed separately by CDK are omitted
+# from this chart's dependencies.
+
+# --- Backend ---
+backend:
+  requireControlPlane: false
+  image:
+    repository: bibekgupta3333/ccs-backend
+    tag: latest
+    pullPolicy: Always
+  resources:
+    requests:
+      cpu: 64m
+      memory: 128Mi
+    limits:
+      cpu: 128m
+      memory: 256Mi
+  redis:
+    enabled: true
+    host: ccs-redis-master
+    port: 6379
+
+# --- Frontend ---
+frontend:
+  requireControlPlane: false
+  image:
+    repository: bibekgupta3333/ccs-frontend
+    tag: latest
+    pullPolicy: Always
+  resources:
+    requests:
+      cpu: 64m
+      memory: 128Mi
+    limits:
+      cpu: 128m
+      memory: 256Mi
+  backend:
+    url: https://api.graph.bibekgupta.com
+
+# --- Ingress (ALB, managed by CDK) ---
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+  hosts:
+    api: api.graph.bibekgupta.com
+    app: app.graph.bibekgupta.com
+
+# --- Seed Job ---
+seedJob:
+  enabled: true

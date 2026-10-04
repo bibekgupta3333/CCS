@@ -1,0 +1,34 @@
+# Default values for backend subchart.
+# These are overridden by umbrella values.yaml via `backend.*`.
+
+image:
+  repository: ccs-backend
+  tag: latest
+  pullPolicy: IfNotPresent
+
+replicas: 1
+
+resources:
+  requests:
+    cpu: 256m
+    memory: 512Mi
+  limits:
+    cpu: 512m
+    memory: 1Gi
+
+logLevel: INFO
+
+database:
+  host: ccs-postgresql
+  port: 5432
+  username: ccs
+  password: ccs_password
+  name: ccs_db
+
+redis:
+  host: ccs-redis-master
+  port: 6379
+  enabled: true
+
+serviceMonitor:
+  enabled: true

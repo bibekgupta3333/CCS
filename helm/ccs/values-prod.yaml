@@ -1,0 +1,93 @@
+# ============================================================
+# CCS Umbrella Chart — PROD values (EKS)
+# ============================================================
+#
+# Usage:
+#   helm install ccs . -f values.yaml -f values-prod.yaml
+#
+# These overrides are applied ON TOP of values.yaml (dev base).
+# The CDK loads this file and merges with dynamic values (e.g. cert ARN).
+#
+# Key differences from dev:
+#   - No control-plane node affinity (EKS managed control plane)
+#   - DockerHub images (bibekgupta3333/*) with Always pull policy
+#   - Lower resource limits (t3.medium = 2 vCPU / 4 GB total)
+#   - ALB ingress with real DNS + HTTPS (not nginx + *.local)
+#   - PostgreSQL and Redis deployed separately by CDK (not bundled)
+
+# --- Backend overrides ---
+backend:
+  requireControlPlane: false            # EKS: control plane is managed, not schedulable
+  image:
+    repository: bibekgupta3333/ccs-backend
+    tag: latest
+    pullPolicy: Always                  # re-pull :latest on every deploy
+  resources:
+    requests:
+      cpu: 64m
+      memory: 128Mi
+    limits:
+      cpu: 128m
+      memory: 256Mi
+  redis:
+    enabled: true
+    host: ccs-redis-master              # Bitnami Redis chart creates <release>-master svc
+    port: 6379
+
+# --- Frontend overrides ---
+frontend:
+  requireControlPlane: false            # EKS: control plane is managed, not schedulable
+  image:
+    repository: bibekgupta3333/ccs-frontend
+    tag: latest
+    pullPolicy: Always
+  resources:
+    requests:
+      cpu: 64m
+      memory: 128Mi
+    limits:
+      cpu: 128m
+      memory: 256Mi
+
+# --- Ingress — ALB instead of nginx ---
+# The certificate-arn annotation is injected dynamically by the CDK
+# (ACM certificate is a CDK token, can't be hardcoded here).
+ingress:
+  enabled: false
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    # certificate-arn injected by CDK at deploy time
+  hosts:
+    api: api.graph.bibekgupta.com
+    app: app.graph.bibekgupta.com
+
+# --- Disable bundled PostgreSQL (deployed separately by CDK) ---
+postgresql:
+  enabled: false
+
+# --- Disable bundled Redis (deployed separately by CDK) ---
+redis:
+  enabled: false
+
+# --- Disable nginx ingress controller (ALB replaces it) ---
+ingress-nginx:
+  enabled: false
+
+# --- Monitoring deployed separately as CDK Helm chart ---
+# kube-prometheus-stack, loki, and promtail are deployed as standalone
+# CDK Helm charts (not bundled in the umbrella chart) so they have
+# independent lifecycles and don't block the CCS app deployment.
+kube-prometheus-stack:
+  enabled: false
+loki:
+  enabled: false
+promtail:
+  enabled: false
+
+# --- Seed Job (same as dev) ---
+seedJob:
+  enabled: true
